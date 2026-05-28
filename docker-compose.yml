@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  torrent-bot:
+    build: .
+    container_name: torrent_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data        # SQLite database
+      - ./cache:/app/cache      # Disk cache
+      - ./logs:/app/logs        # Log files
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

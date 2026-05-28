@@ -1,0 +1,167 @@
+"""
+main.py — Bot entry point.
+Sets up the Application, registers all handlers, connects the database,
+and starts polling.
+"""
+
+import asyncio
+import logging
+
+from telegram import BotCommand
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+)
+
+from bot.config import settings
+from bot.utils.logger import setup_logger
+from bot.db.models import db
+from bot.utils.cache import torrent_cache
+from bot.utils.userbot import userbot
+
+# Handlers
+from bot.handlers.search import search_command, cancel_command
+from bot.handlers.pagination import callback_handler
+from bot.handlers.info import help_command, stats_command, top_command, latest_command, start_command
+from bot.handlers.favorites import myfavs_command, export_command, history_command
+from bot.handlers.admin import (
+    broadcast_command,
+    blacklist_command,
+    unblacklist_command,
+    analytics_command,
+    clear_cache_command,
+    list_blacklist_command,
+)
+
+log = setup_logger("torrent_bot", settings.LOG_LEVEL, settings.LOG_FILE)
+
+
+async def post_init(application: Application) -> None:
+    """Run after the application is initialized."""
+    await db.connect()
+    log.info("[OK] Database connected")
+
+    if userbot:
+        try:
+            await userbot.start()
+            log.info("[OK] Userbot started for leech features")
+
+            # Scan dialogs to warm the peer cache AND find the leech group
+            leech_id = int(settings.LEECH_GROUP_ID) if settings.LEECH_GROUP_ID else None
+            leech_found = False
+
+            async for dialog in userbot.get_dialogs(limit=500):
+                chat = dialog.chat
+                if leech_id and chat.id == leech_id:
+                    log.info(f"[OK] Leech group found in dialogs: '{chat.title}' (id={chat.id})")
+                    leech_found = True
+
+            log.info("[OK] Userbot peer cache warmed up")
+
+            if leech_id and not leech_found:
+                log.error(f"[Userbot] Leech group {leech_id} NOT found in your dialogs!")
+                log.error("[Userbot] Open that group in Telegram with your account, then restart.")
+            elif leech_id and leech_found:
+                log.info("[OK] Leech group is ready for sending!")
+                
+                # Register leech completion listener handler
+                from pyrogram.handlers import MessageHandler as PyrogramMessageHandler
+                from pyrogram import filters as pyrogram_filters
+                from bot.utils.leech_queue import leech_queue
+
+                async def handle_leech_reply(client, message):
+                    await leech_queue.handle_completion(message)
+
+                userbot.add_handler(
+                    PyrogramMessageHandler(
+                        handle_leech_reply,
+                        filters=pyrogram_filters.chat(leech_id)
+                    )
+                )
+                log.info("[OK] Registered leech completion listener handler")
+
+        except Exception as e:
+            log.error(f"[Userbot] Failed to start userbot: {e}")
+
+
+    # Set bot commands visible in Telegram menu
+    await application.bot.set_my_commands([
+        BotCommand("start", "Start the bot"),
+        BotCommand("search", "Search torrents: /search <query>"),
+        BotCommand("top", "Trending torrents"),
+        BotCommand("latest", "Latest uploads"),
+        BotCommand("stats", "Bot statistics"),
+        BotCommand("myfavs", "Your saved torrents"),
+        BotCommand("export", "Export favorite magnets"),
+        BotCommand("history", "Your search history"),
+        BotCommand("cancel", "Cancel current search"),
+        BotCommand("help", "Show all commands"),
+    ])
+    log.info("[OK] Bot commands registered")
+
+
+async def post_shutdown(application: Application) -> None:
+    """Cleanup on shutdown."""
+    await db.close()
+    log.info("[BYE] Database connection closed")
+    if userbot and userbot.is_connected:
+        await userbot.stop()
+        log.info("[BYE] Userbot stopped")
+
+
+def main() -> None:
+    if not settings.BOT_TOKEN:
+        raise ValueError("BOT_TOKEN is not set! Check your .env file.")
+
+    log.info("[START] Starting Torrent Search Bot")
+
+    app = (
+        Application.builder()
+        .token(settings.BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
+
+    # ── User commands ─────────────────────────────────────────────────────────
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("s", search_command))            # Alias
+    app.add_handler(CommandHandler("cancel", cancel_command))
+    app.add_handler(CommandHandler("top", top_command))
+    app.add_handler(CommandHandler("latest", latest_command))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("myfavs", myfavs_command))
+    app.add_handler(CommandHandler("export", export_command))
+    app.add_handler(CommandHandler("history", history_command))
+
+    # ── Admin commands ────────────────────────────────────────────────────────
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("blacklist", blacklist_command))
+    app.add_handler(CommandHandler("unblacklist", unblacklist_command))
+    app.add_handler(CommandHandler("analytics", analytics_command))
+    app.add_handler(CommandHandler("clearcache", clear_cache_command))
+    app.add_handler(CommandHandler("blist", list_blacklist_command))
+
+    # ── Inline keyboard callbacks ─────────────────────────────────────────────
+    app.add_handler(CallbackQueryHandler(callback_handler))
+
+    # ── Unknown commands ──────────────────────────────────────────────────────
+    async def unknown(update, context):
+        await update.message.reply_text(
+            "❓ Unknown command. Type /help to see available commands."
+        )
+
+    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+
+    log.info("[OK] All handlers registered")
+    log.info("[BOT] Polling for updates...")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()

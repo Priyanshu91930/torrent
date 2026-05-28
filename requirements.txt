@@ -1,0 +1,26 @@
+# ── Core Telegram ─────────────────────────────────────────────────────────────
+python-telegram-bot[job-queue]==21.6
+pyrogram==2.0.106
+tgcrypto==1.2.5
+
+# ── HTTP & Scraping ───────────────────────────────────────────────────────────
+aiohttp==3.9.5
+aiohttp-socks==0.8.4        # SOCKS5 proxy support
+beautifulsoup4==4.12.3
+lxml>=5.1.0
+fake-useragent==1.5.1
+
+# ── Async & Performance ───────────────────────────────────────────────────────
+asyncio-throttle==1.0.2
+aiosqlite==0.20.0
+
+# ── Serialization ─────────────────────────────────────────────────────────────
+orjson==3.10.3
+
+# ── Environment ───────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── Terminal UI ───────────────────────────────────────────────────────────────
+rich==13.7.1
+
+curl-cffi==0.15.0
