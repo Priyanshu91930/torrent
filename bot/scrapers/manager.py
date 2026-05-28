@@ -19,7 +19,11 @@ from bot.config import settings
 
 # ── Available scrapers ────────────────────────────────────────────────────────
 ALL_SCRAPERS: List[BaseScraper] = [
-    HDHub4uScraper(timeout=settings.REQUEST_TIMEOUT, max_retries=settings.MAX_RETRIES),
+    HDHub4uScraper(
+        timeout=settings.REQUEST_TIMEOUT,
+        max_retries=settings.MAX_RETRIES,
+        proxy=settings.HTTP_PROXY,
+    ),
 ]
 
 # Category → which scrapers are relevant
