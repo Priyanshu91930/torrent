@@ -306,7 +306,22 @@ class HDHub4uScraper(BaseScraper):
                 
                 soup = BeautifulSoup(html, "lxml")
 
-                # Priority 1: Pixeldrain Link (Super stable direct download)
+                # Priority 1: Dynamic FSL / FSLv2 links (e.g. cdn.fsl-buckets.work)
+                fslv2_anchor = soup.find("a", id="s3") or soup.find("a", href=re.compile(r"cdn\."))
+                fsl_anchor = soup.find("a", id="fsl") or soup.find("a", href=re.compile(r"hub\."))
+                
+                minutes = datetime.datetime.now().minute
+                
+                if fslv2_anchor and fslv2_anchor.get("href"):
+                    fsl_link = fslv2_anchor["href"] + f'_1{minutes}'
+                    log.info(f"[HDHub4u] Found Dynamic FSLv2 link: {fsl_link}")
+                    return fsl_link
+                elif fsl_anchor and fsl_anchor.get("href"):
+                    fsl_link = fsl_anchor["href"] + f'1{minutes}'
+                    log.info(f"[HDHub4u] Found Dynamic FSL link: {fsl_link}")
+                    return fsl_link
+
+                # Priority 2: Pixeldrain Link (Stable direct download fallback)
                 pxl_match = re.search(r'var pxl\s*=\s*["\'](https?://[^"\']+)["\']', html)
                 if pxl_match:
                     pxl_url = pxl_match.group(1).replace("pixeldrain.dev", "pixeldrain.com")
@@ -319,22 +334,11 @@ class HDHub4uScraper(BaseScraper):
                     log.info(f"[HDHub4u] Found Pixeldrain link from anchor: {pxl_url}")
                     return pxl_url
 
-                # Priority 2: Direct Server link (Hubcloud/Pixel 10Gbps)
+                # Priority 3: Direct Server link (Hubcloud/Pixel 10Gbps fallback)
                 pixel_anchor = soup.find("a", href=re.compile(r"pixel\.hubcloud\."))
                 if pixel_anchor and pixel_anchor.get("href"):
                     log.info(f"[HDHub4u] Found 10Gbps Hubcloud link: {pixel_anchor['href']}")
                     return pixel_anchor["href"]
-
-                # Priority 3: Dynamic FSL / FSLv2 links
-                fslv2_anchor = soup.find("a", id="s3") or soup.find("a", href=re.compile(r"cdn\."))
-                fsl_anchor = soup.find("a", id="fsl") or soup.find("a", href=re.compile(r"hub\."))
-                
-                minutes = datetime.datetime.now().minute
-                
-                if fslv2_anchor and fslv2_anchor.get("href"):
-                    return fslv2_anchor["href"] + f'_1{minutes}'
-                elif fsl_anchor and fsl_anchor.get("href"):
-                    return fsl_anchor["href"] + f'1{minutes}'
 
         except Exception as e:
             log.error(f"[{self.name}] Error resolving FSL link for {initial_url}: {e}")
