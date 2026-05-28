@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Install system dependencies for lxml / aiohttp
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+    build-essential \
     libxml2-dev \
     libxslt-dev \
     && rm -rf /var/lib/apt/lists/*
