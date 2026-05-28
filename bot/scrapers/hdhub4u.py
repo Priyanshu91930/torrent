@@ -70,7 +70,8 @@ class HDHub4uScraper(BaseScraper):
                 cookies=cookies,
                 impersonate="chrome110",
                 timeout=30,
-                allow_redirects=True
+                allow_redirects=True,
+                proxy=self.proxy
             )
             if r.status_code == 200:
                 return r.text
@@ -104,7 +105,14 @@ class HDHub4uScraper(BaseScraper):
                 "Referer": f"{self.base_url}/"
             }
             try:
-                r = requests.get(self.typesense_url, params=params, headers=headers, impersonate="chrome110", timeout=20)
+                r = requests.get(
+                    self.typesense_url,
+                    params=params,
+                    headers=headers,
+                    impersonate="chrome110",
+                    timeout=20,
+                    proxy=self.proxy
+                )
                 if r.status_code == 200:
                     return r.json()
             except Exception as e:
