@@ -27,6 +27,7 @@ from bot.handlers.search import search_command, cancel_command
 from bot.handlers.pagination import callback_handler
 from bot.handlers.info import help_command, stats_command, top_command, latest_command, start_command
 from bot.handlers.favorites import myfavs_command, export_command, history_command
+from bot.handlers.report import report_command
 from bot.handlers.admin import (
     broadcast_command,
     blacklist_command,
@@ -97,6 +98,7 @@ async def post_init(application: Application) -> None:
         BotCommand("myfavs", "Your saved torrents"),
         BotCommand("export", "Export favorite magnets"),
         BotCommand("history", "Your search history"),
+        BotCommand("report", "Diagnostic report: website vs bot items"),
         BotCommand("cancel", "Cancel current search"),
         BotCommand("help", "Show all commands"),
     ])
@@ -138,6 +140,7 @@ def main() -> None:
     app.add_handler(CommandHandler("myfavs", myfavs_command))
     app.add_handler(CommandHandler("export", export_command))
     app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(CommandHandler("report", report_command))
 
     # ── Admin commands ────────────────────────────────────────────────────────
     app.add_handler(CommandHandler("broadcast", broadcast_command))

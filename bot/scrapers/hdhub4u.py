@@ -236,6 +236,130 @@ class HDHub4uScraper(BaseScraper):
         log.info(f"[{self.name}] Scraped {len(flat_results)} direct links matching criteria")
         return flat_results
 
+    async def run_quality_report(self, query: SearchQuery, max_pages_to_check: int = 2) -> dict:
+        """
+        Runs a report to find posts that do not contain the QUALITY_KEYWORDS.
+        """
+        log.info(f"[{self.name}] Running quality report for: {query.query}")
+        
+        # 1. Fetch search results from Typesense
+        LIMIT_PER_PAGE = 30
+        
+        def fetch_search(page: int):
+            params = {
+                "q": query.query,
+                "query_by": "post_title,category,stars,director,imdb_id",
+                "sort_by": "sort_by_date:desc",
+                "limit": str(LIMIT_PER_PAGE),
+                "page": str(page)
+            }
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+                "Accept": "*/*",
+                "Origin": self.base_url,
+                "Referer": f"{self.base_url}/"
+            }
+            try:
+                r = requests.get(
+                    self.typesense_url,
+                    params=params,
+                    headers=headers,
+                    impersonate="chrome110",
+                    timeout=20,
+                    proxy=self.proxy
+                )
+                if r.status_code == 200:
+                    return r.json()
+            except Exception as e:
+                log.error(f"[{self.name}] Typesense fetch failed: {e}")
+            return None
+
+        first_page = await asyncio.to_thread(fetch_search, 1)
+        if not first_page or not first_page.get("hits"):
+            return {
+                "total_website_items": 0,
+                "processed_items_count": 0,
+                "skipped_posts": []
+            }
+
+        found = first_page.get("found", 0)
+        total_pages = min(max_pages_to_check, (found + LIMIT_PER_PAGE - 1) // LIMIT_PER_PAGE)
+        
+        pages_to_fetch = list(range(2, total_pages + 1))
+        all_hits = list(first_page.get("hits", []))
+
+        if pages_to_fetch:
+            tasks = [asyncio.to_thread(fetch_search, p) for p in pages_to_fetch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                if r and isinstance(r, dict) and r.get("hits"):
+                    all_hits.extend(r.get("hits"))
+
+        sem = asyncio.Semaphore(10)
+        skipped_posts = []
+
+        async def check_hit(hit):
+            doc = hit.get("document", {})
+            title = doc.get("post_title", "")
+            permalink = doc.get("permalink", "")
+            
+            if not permalink:
+                return
+                
+            post_url = self.base_url + permalink if permalink.startswith("/") else permalink
+            
+            async with sem:
+                html = await asyncio.to_thread(self._http_get, post_url)
+                
+            if not html:
+                return
+
+            soup = BeautifulSoup(html, "lxml")
+            QUALITY_KEYWORDS = ["480p", "720p", "1080p"]
+            
+            has_download_links = False
+            has_matching_quality = False
+            
+            for a in soup.find_all("a"):
+                href = a.get("href")
+                text = a.get_text(strip=True)
+                if not href or not text:
+                    continue
+                
+                href_lower = href.lower()
+                text_lower = text.lower()
+                
+                is_download = (
+                    "hubdrive" in href_lower or 
+                    "hubcdn" in href_lower or 
+                    "hubcloud" in href_lower or 
+                    "pixeldrain" in href_lower or 
+                    "gadgetsweb" in href_lower or
+                    "cdn." in href_lower or
+                    "hub." in href_lower or
+                    bool(re.search(r"([\d.]+)\s*(gb|mb)", text_lower))
+                )
+                
+                if is_download:
+                    has_download_links = True
+                    if any(q in text_lower for q in QUALITY_KEYWORDS):
+                        has_matching_quality = True
+                        break
+            
+            if has_download_links and not has_matching_quality:
+                skipped_posts.append(title)
+            elif not has_download_links:
+                skipped_posts.append(f"{title} (No links found)")
+
+        tasks = [check_hit(hit) for hit in all_hits]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        return {
+            "total_website_items": found,
+            "processed_items_count": len(all_hits),
+            "skipped_posts": skipped_posts
+        }
+
     async def _resolve_fsl_link(self, initial_url: str, post_url: str) -> Optional[str]:
         """Trace landing/redirect pages to fetch active FSL link."""
         try:
