@@ -74,16 +74,24 @@ async def post_init(application: Application) -> None:
                 from pyrogram import filters as pyrogram_filters
                 from bot.utils.leech_queue import leech_queue
 
+                # Pyrogram's filters.chat() works with the full negative ID for supergroups
+                # Strip -100 prefix to get the raw peer ID for chat filter
+                raw_leech_id = int(str(leech_id).replace("-100", "")) if str(leech_id).startswith("-100") else leech_id
+
                 async def handle_leech_reply(client, message):
+                    log.info(f"[Queue] 📩 Pyrogram received message in leech group from {message.from_user.id if message.from_user else 'unknown'}: {(message.text or '')[:80]}")
                     await leech_queue.handle_completion(message)
 
+                # Use group=-1 so this handler runs before all other handlers
+                # Try both the raw and full ID to make sure we match
                 userbot.add_handler(
                     PyrogramMessageHandler(
                         handle_leech_reply,
-                        filters=pyrogram_filters.chat(leech_id)
-                    )
+                        filters=pyrogram_filters.chat([leech_id, raw_leech_id])
+                    ),
+                    group=-1
                 )
-                log.info("[OK] Registered leech completion listener handler")
+                log.info(f"[OK] Registered leech completion listener handler (chat_id={leech_id}, raw={raw_leech_id})")
 
         except Exception as e:
             log.error(f"[Userbot] Failed to start userbot: {e}")
