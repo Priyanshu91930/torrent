@@ -31,8 +31,8 @@ def is_completion_message(message) -> bool:
     # Standard indicators for finished leech downloads in leech groups
     completion_keywords = [
         "time taken", "download stopped", "stopped!", "completed", 
-        "done", "uploaded", "successfully uploaded", "size:", 
-        "total size:", "speed:", "index link:", "direct link:", "seeders:"
+        "done", "successfully uploaded", "elapsed:", "total files:",
+        "sent to bot pm", "have been sent", "index link:"
     ]
     if any(kw in text for kw in completion_keywords):
         return True
