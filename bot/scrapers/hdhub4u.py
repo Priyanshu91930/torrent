@@ -92,8 +92,8 @@ class HDHub4uScraper(BaseScraper):
         log.info(f"[{self.name}] Searching: {query.query}")
         
         # 1. Fetch first page of search results from Typesense
-        LIMIT_PER_PAGE = 30
-        MAX_PAGES = 20  # Fetch up to 20 pages (600 hits) to get all results
+        LIMIT_PER_PAGE = 250
+        MAX_PAGES = 40  # Fetch up to 40 pages (10,000 hits) to get all results
 
         def fetch_search(page: int):
             params = {
@@ -250,7 +250,7 @@ class HDHub4uScraper(BaseScraper):
         log.info(f"[{self.name}] Running quality report for: {query.query}")
         
         # 1. Fetch search results from Typesense
-        LIMIT_PER_PAGE = 30
+        LIMIT_PER_PAGE = 250
         
         def fetch_search(page: int):
             params = {
