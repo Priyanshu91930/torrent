@@ -57,7 +57,7 @@ class HDHub4uScraper(BaseScraper):
     def base_url(self) -> str:
         return settings.HDHUB4U_URL
 
-    typesense_url = "https://search.hdhub4u.glass/collections/post/documents/search"
+    typesense_url = "https://search.pingora.fyi/collections/post/documents/search"
 
     def _http_get(self, url: str, params: Optional[dict] = None, referer: Optional[str] = None, cookies: Optional[dict] = None) -> Optional[str]:
         """Perform a synchronous HTTP GET request using curl_cffi impersonate."""
@@ -120,6 +120,8 @@ class HDHub4uScraper(BaseScraper):
                 )
                 if r.status_code == 200:
                     return r.json()
+                else:
+                    log.warning(f"[{self.name}] Typesense search returned status code {r.status_code}: {r.text}")
             except Exception as e:
                 log.error(f"[{self.name}] Typesense fetch failed: {e}")
             return None
