@@ -1,6 +1,6 @@
 # 🤖 Torrent Search Bot
 
-A powerful, production-ready async **Python Telegram bot** that searches **5 torrent websites simultaneously**, extracts magnet links, and delivers beautifully formatted results with pagination, filtering, admin controls, and full Docker support.
+A powerful, production-ready async **Python Telegram bot** that scrapes direct FSL download links from HDHub4u, and delivers beautifully formatted results with pagination, filtering, admin controls, and full Docker support.
 
 ---
 
@@ -8,7 +8,7 @@ A powerful, production-ready async **Python Telegram bot** that searches **5 tor
 
 | Feature | Details |
 |---|---|
-| 🔍 Multi-site search | TamilMV · Pirate Bay · YTS · TorrentGalaxy · Nyaa |
+| 🔍 Search Source | HDHub4u |
 | ⚡ Async architecture | `asyncio` + `aiohttp` for maximum concurrency |
 | 📊 Real-time progress | Animated progress bar via Telegram message edits |
 | 🎯 Smart filtering | Movie · TV · Anime · Game · 4K · x265 · size filters |
@@ -213,11 +213,7 @@ torrent-bot/
 │   │   └── admin.py         # Admin commands
 │   ├── scrapers/
 │   │   ├── base.py          # Abstract base
-│   │   ├── tamilmv.py       # TamilMV
-│   │   ├── nyaa.py          # Nyaa.si
-│   │   ├── yts.py           # YTS API
-│   │   ├── torrentgalaxy.py # TorrentGalaxy
-│   │   ├── piratebay.py     # Pirate Bay
+│   │   ├── hdhub4u.py       # HDHub4u scraper
 │   │   └── manager.py       # Orchestrator
 │   ├── utils/
 │   │   ├── cache.py         # TTL cache

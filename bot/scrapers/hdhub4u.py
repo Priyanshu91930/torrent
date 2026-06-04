@@ -10,6 +10,7 @@ from curl_cffi import requests
 from bot.models import TorrentResult, SearchQuery
 from bot.scrapers.base import BaseScraper
 from bot.utils.logger import log
+from bot.config import settings
 
 def rot13(s: str) -> str:
     out = []
@@ -51,7 +52,11 @@ class HDHub4uScraper(BaseScraper):
     """
 
     name = "HDHub4u"
-    base_url = "https://new1.hdhub4u.limo"
+
+    @property
+    def base_url(self) -> str:
+        return settings.HDHUB4U_URL
+
     typesense_url = "https://search.hdhub4u.glass/collections/post/documents/search"
 
     def _http_get(self, url: str, params: Optional[dict] = None, referer: Optional[str] = None, cookies: Optional[dict] = None) -> Optional[str]:

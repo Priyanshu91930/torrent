@@ -53,13 +53,7 @@ class Config:
     HTTP_PROXY: str = os.getenv("HTTP_PROXY", "")
 
     # ── Torrent Sites ─────────────────────────────────────────────────────────
-    TAMILMV_URL: str = os.getenv("TAMILMV_URL", "https://www.1tamilmv.futbol")
-    NYAA_URL: str = os.getenv("NYAA_URL", "https://nyaa.si")
-    YTS_API_URL: str = os.getenv("YTS_API_URL", "https://yts.mx/api/v2")
-    TORRENTGALAXY_URL: str = os.getenv(
-        "TORRENTGALAXY_URL", "https://torrentgalaxy.to"
-    )
-    PIRATEBAY_URL: str = os.getenv("PIRATEBAY_URL", "https://thepiratebay.org")
+    HDHUB4U_URL: str = os.getenv("HDHUB4U_URL", "https://new2.hdhub4u.limo")
 
 
 # Singleton
