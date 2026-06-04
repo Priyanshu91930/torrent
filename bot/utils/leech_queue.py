@@ -147,36 +147,48 @@ class LeechQueueManager:
                 self.is_sending = False
 
     async def handle_completion(self, reply_msg):
-        target_id = None
-        if reply_msg.reply_to_message:
-            target_id = reply_msg.reply_to_message.id
-        elif hasattr(reply_msg, "reply_to_message_id") and reply_msg.reply_to_message_id:
-            target_id = reply_msg.reply_to_message_id
-
-        if not target_id:
-            return
-
-        async with self.lock:
-            if target_id not in self.active:
-                return
-
-        # Make sure it's a real completed or stopped notification
+        """Handle a completion message from the leech bot.
+        
+        The leech bot sends completion as a standalone message (NOT a reply).
+        So we use two strategies:
+        1. If the message is a reply, match by reply_to message ID.
+        2. If NOT a reply, match to the oldest active task (FIFO order).
+        """
+        # Make sure it's a real completed or stopped notification first
         if not is_completion_message(reply_msg):
             return
 
+        text = (reply_msg.text or reply_msg.caption or "").lower()
+        is_stopped = "stopped" in text or "stopped!" in text or "download stopped" in text
+
         async with self.lock:
-            if target_id not in self.active:
+            if not self.active:
                 return
-            magnet, idx, user_id, query_key, session, _ = self.active.pop(target_id)
-            
-            text = (reply_msg.text or reply_msg.caption or "").lower()
-            if "stopped" in text or "stopped!" in text:
+
+            target_id = None
+
+            # Strategy 1: Message is a reply — match by replied-to message ID
+            if reply_msg.reply_to_message:
+                target_id = reply_msg.reply_to_message.id
+            elif hasattr(reply_msg, "reply_to_message_id") and reply_msg.reply_to_message_id:
+                target_id = reply_msg.reply_to_message_id
+
+            if target_id and target_id in self.active:
+                # Exact match found
+                magnet, idx, user_id, query_key, session, _ = self.active.pop(target_id)
+            else:
+                # Strategy 2: Standalone message — release oldest active task (FIFO)
+                oldest_msg_id = min(self.active.keys())
+                magnet, idx, user_id, query_key, session, _ = self.active.pop(oldest_msg_id)
+                log.info(f"[Queue] Completion matched to oldest active task #{idx} (msg_id={oldest_msg_id}) via FIFO")
+
+            if is_stopped:
                 log.info(f"[Queue] Task #{idx} stopped/failed.")
                 await self.send_status_log(user_id, f"❌ Task #{idx} was stopped or failed by leech bot!")
             else:
                 log.info(f"[Queue] Task #{idx} completed.")
                 await self.send_status_log(user_id, f"✅ Task #{idx} completed successfully!")
-            
+
             # Trigger processing next in queue
             asyncio.create_task(self._process_queue())
 
