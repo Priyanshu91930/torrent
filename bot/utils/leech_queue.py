@@ -29,14 +29,19 @@ def is_completion_message(message) -> bool:
         return False
         
     # Standard indicators for finished leech downloads in leech groups
-    if "time taken" in text or "download stopped" in text or "stopped!" in text:
+    completion_keywords = [
+        "time taken", "download stopped", "stopped!", "completed", 
+        "done", "uploaded", "successfully uploaded", "size:", 
+        "total size:", "speed:", "index link:", "direct link:", "seeders:"
+    ]
+    if any(kw in text for kw in completion_keywords):
         return True
     return False
 
 class LeechQueueManager:
     def __init__(self):
         self.pending = []  # items: (magnet, idx, user_id, query_key, session)
-        self.active = {}   # msg_id -> (magnet, idx, user_id, query_key, session)
+        self.active = {}   # msg_id -> (magnet, idx, user_id, query_key, session, start_time)
         self.lock = asyncio.Lock()
         self.is_sending = False
 
@@ -47,6 +52,16 @@ class LeechQueueManager:
                 await userbot.send_message(user_id, f"🤖 <b>[Leech Log]</b>\n{text}", parse_mode=None)
         except Exception as e:
             log.error(f"[Queue] Failed to send status log to user {user_id}: {e}")
+
+    async def clear_queue(self) -> int:
+        """Clear all active and pending items in the queue."""
+        async with self.lock:
+            pending_count = len(self.pending)
+            active_count = len(self.active)
+            self.pending.clear()
+            self.active.clear()
+            log.info(f"[Queue] Cleared queue. Released {pending_count} pending and {active_count} active items.")
+            return pending_count + active_count
 
     async def add_to_queue(self, magnets, user_id, query_key, session):
         async with self.lock:
@@ -75,6 +90,19 @@ class LeechQueueManager:
         try:
             while True:
                 async with self.lock:
+                    # Clean up timed-out active tasks (e.g., active for > 15 minutes)
+                    now = datetime.datetime.now()
+                    timed_out_ids = []
+                    for msg_id, val in list(self.active.items()):
+                        start_time = val[5] if len(val) > 5 else now
+                        if (now - start_time).total_seconds() > 900: # 15 minutes
+                            timed_out_ids.append(msg_id)
+                    
+                    for msg_id in timed_out_ids:
+                        magnet, idx, user_id, query_key, session, _ = self.active.pop(msg_id)
+                        log.warning(f"[Queue] Task #{idx} timed out after 15 minutes. Removing from active.")
+                        await self.send_status_log(user_id, f"⚠️ Task #{idx} timed out (15 mins) and was auto-released to continue the queue.")
+
                     if len(self.active) >= 5:
                         log.info(f"[Queue] Active limit (5) reached. Active messages: {list(self.active.keys())}")
                         break
@@ -98,7 +126,7 @@ class LeechQueueManager:
                     msg = await userbot.send_message(settings.LEECH_GROUP_ID, cmd)
                     
                     async with self.lock:
-                        self.active[msg.id] = (magnet, idx, user_id, query_key, session)
+                        self.active[msg.id] = (magnet, idx, user_id, query_key, session, datetime.datetime.now())
                         session["sent_magnets"].add(magnet)
 
                     await db.mark_leech_sent(user_id, query_key, magnet, idx)
@@ -139,7 +167,7 @@ class LeechQueueManager:
         async with self.lock:
             if target_id not in self.active:
                 return
-            magnet, idx, user_id, query_key, session = self.active.pop(target_id)
+            magnet, idx, user_id, query_key, session, _ = self.active.pop(target_id)
             
             text = (reply_msg.text or reply_msg.caption or "").lower()
             if "stopped" in text or "stopped!" in text:

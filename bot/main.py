@@ -36,6 +36,7 @@ from bot.handlers.admin import (
     clear_cache_command,
     list_blacklist_command,
 )
+from bot.handlers.import_txt import import_command, txt_file_message_handler, clear_queue_command
 
 log = setup_logger("torrent_bot", settings.LOG_LEVEL, settings.LOG_FILE)
 
@@ -99,6 +100,8 @@ async def post_init(application: Application) -> None:
         BotCommand("export", "Export favorite magnets"),
         BotCommand("history", "Your search history"),
         BotCommand("report", "Diagnostic report: website vs bot items"),
+        BotCommand("import", "Import links from a txt file"),
+        BotCommand("clearqueue", "Clear the leech queue"),
         BotCommand("cancel", "Cancel current search"),
         BotCommand("help", "Show all commands"),
     ])
@@ -141,6 +144,7 @@ def main() -> None:
     app.add_handler(CommandHandler("export", export_command))
     app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("report", report_command))
+    app.add_handler(CommandHandler("import", import_command))
 
     # ── Admin commands ────────────────────────────────────────────────────────
     app.add_handler(CommandHandler("broadcast", broadcast_command))
@@ -149,6 +153,11 @@ def main() -> None:
     app.add_handler(CommandHandler("analytics", analytics_command))
     app.add_handler(CommandHandler("clearcache", clear_cache_command))
     app.add_handler(CommandHandler("blist", list_blacklist_command))
+    app.add_handler(CommandHandler("clearqueue", clear_queue_command))
+    app.add_handler(CommandHandler("cq", clear_queue_command))
+
+    # ── Document / file imports ────────────────────────────────────────────────
+    app.add_handler(MessageHandler(filters.Document.ALL, txt_file_message_handler))
 
     # ── Inline keyboard callbacks ─────────────────────────────────────────────
     app.add_handler(CallbackQueryHandler(callback_handler))
