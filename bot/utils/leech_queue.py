@@ -155,14 +155,24 @@ class LeechQueueManager:
         2. If NOT a reply, match to the oldest active task (FIFO order).
         """
         # Make sure it's a real completed or stopped notification first
+        log.debug(f"[Queue] handle_completion called. active={len(self.active)}, pending={len(self.pending)}")
+
         if not is_completion_message(reply_msg):
+            log.debug("[Queue] Message is NOT a completion message, ignoring.")
             return
+
+        log.info(f"[Queue] ✅ Completion message detected!")
 
         text = (reply_msg.text or reply_msg.caption or "").lower()
         is_stopped = "stopped" in text or "stopped!" in text or "download stopped" in text
 
+        # Extract task info inside lock, then do I/O outside the lock
+        matched_idx = None
+        matched_user_id = None
+
         async with self.lock:
             if not self.active:
+                log.warning("[Queue] Completion received but no active tasks found.")
                 return
 
             target_id = None
@@ -176,20 +186,27 @@ class LeechQueueManager:
             if target_id and target_id in self.active:
                 # Exact match found
                 magnet, idx, user_id, query_key, session, _ = self.active.pop(target_id)
+                log.info(f"[Queue] Task #{idx} matched by reply_to_message ID.")
             else:
                 # Strategy 2: Standalone message — release oldest active task (FIFO)
                 oldest_msg_id = min(self.active.keys())
                 magnet, idx, user_id, query_key, session, _ = self.active.pop(oldest_msg_id)
-                log.info(f"[Queue] Completion matched to oldest active task #{idx} (msg_id={oldest_msg_id}) via FIFO")
+                log.info(f"[Queue] Completion matched to oldest active task #{idx} (msg_id={oldest_msg_id}) via FIFO. Remaining active: {len(self.active)}")
 
-            if is_stopped:
-                log.info(f"[Queue] Task #{idx} stopped/failed.")
-                await self.send_status_log(user_id, f"❌ Task #{idx} was stopped or failed by leech bot!")
-            else:
-                log.info(f"[Queue] Task #{idx} completed.")
-                await self.send_status_log(user_id, f"✅ Task #{idx} completed successfully!")
+            matched_idx = idx
+            matched_user_id = user_id
 
-            # Trigger processing next in queue
-            asyncio.create_task(self._process_queue())
+        # ── Lock is now RELEASED — do I/O and scheduling outside ─────────────
+        if is_stopped:
+            log.info(f"[Queue] Task #{matched_idx} stopped/failed.")
+            await self.send_status_log(matched_user_id, f"❌ Task #{matched_idx} was stopped or failed by leech bot!")
+        else:
+            log.info(f"[Queue] Task #{matched_idx} completed.")
+            await self.send_status_log(matched_user_id, f"✅ Task #{matched_idx} completed successfully!")
+
+        # Trigger processing next in queue — lock is FREE now, no deadlock
+        asyncio.create_task(self._process_queue())
+        log.info(f"[Queue] _process_queue scheduled after task #{matched_idx} completion.")
 
 leech_queue = LeechQueueManager()
+
