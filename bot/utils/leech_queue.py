@@ -424,8 +424,11 @@ class LeechQueueManager:
                     ub_first = userbot.me.first_name or ""
                     ub_user = userbot.me.username or ""
 
+                from pyrogram.enums import ChatType
                 is_our_completion = False
-                if ub_first and ub_first.lower() in text.lower():
+                if message.chat and message.chat.type == ChatType.PRIVATE:
+                    is_our_completion = True
+                elif ub_first and ub_first.lower() in text.lower():
                     is_our_completion = True
                 elif ub_user and ub_user.lower() in text.lower():
                     is_our_completion = True

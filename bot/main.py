@@ -74,27 +74,26 @@ async def post_init(application: Application) -> None:
 
                 from pyrogram.handlers import MessageHandler as PyrogramMessageHandler
                 from pyrogram.handlers import EditedMessageHandler as PyrogramEditedMessageHandler
+                from pyrogram.enums import ChatType
                 from bot.utils.leech_queue import leech_queue
 
-                # Route ALL messages+edits from leech group through handle_message
-                # which auto-detects: completion, 100% upload progress, or ignores
                 async def handle_leech_new(client, message):
                     chat_id = message.chat.id if message.chat else None
-                    text_preview = (message.text or message.caption or '')[:80]
-                    log.debug(f"[Queue] 📩 [NEW] from={getattr(message.from_user, 'id', '?')}: {text_preview!r}")
-                    if chat_id == leech_id:
+                    is_group = (chat_id == leech_id)
+                    is_pm = (message.chat and message.chat.type == ChatType.PRIVATE)
+                    if is_group or is_pm:
                         await leech_queue.handle_message(message)
 
                 async def handle_leech_edit(client, message):
                     chat_id = message.chat.id if message.chat else None
-                    text_preview = (message.text or message.caption or '')[:80]
-                    log.debug(f"[Queue] ✏️ [EDIT] from={getattr(message.from_user, 'id', '?')}: {text_preview!r}")
-                    if chat_id == leech_id:
+                    is_group = (chat_id == leech_id)
+                    is_pm = (message.chat and message.chat.type == ChatType.PRIVATE)
+                    if is_group or is_pm:
                         await leech_queue.handle_message(message)
 
                 userbot.add_handler(PyrogramMessageHandler(handle_leech_new), group=-1)
                 userbot.add_handler(PyrogramEditedMessageHandler(handle_leech_edit), group=-1)
-                log.info(f"[OK] Leech handlers registered (NEW + EDITED, chat_id={leech_id})")
+                log.info(f"[OK] Leech handlers registered (NEW + EDITED, chat_id={leech_id} + PMs)")
 
                 # Wire admin alert callback so disk-full events reach admins via the bot
                 async def _alert_admins(text: str):
