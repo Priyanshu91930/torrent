@@ -63,6 +63,14 @@ def is_upload_complete_message(text: str) -> bool:
     return "100%" in t and ("upload" in t or "leech" in t or "progress" in t or "%" in t)
 
 
+def is_limit_exceeded_message(text: str) -> bool:
+    """Return True if the leech bot says our limit is exceeded."""
+    if not text:
+        return False
+    t = text.lower()
+    return "limit exceeded" in t or "tasks limit exceeded" in t
+
+
 class ActiveTask:
     """Holds all state for one active leech slot."""
     __slots__ = (
@@ -112,6 +120,7 @@ class LeechQueueManager:
         self.lock = asyncio.Lock()
         self.is_sending = False
         self.paused = False             # True when disk is full — stops sending new tasks
+        self.limit_exceeded_cooldown: datetime.datetime | None = None
         # Background watchdog task reference
         self._watchdog_task: asyncio.Task | None = None
         # Admin alert callback — set by main.py after bot starts
@@ -150,9 +159,57 @@ class LeechQueueManager:
                 task.user_id,
                 f"⏭️ Task #{task.idx} auto-skipped ({reason}). Moving to next link."
             )
+            await self._check_job_completion(task.query_key)
 
         if skipped:
             asyncio.create_task(self._process_queue())
+
+    async def _check_job_completion(self, query_key: str):
+        """Check if all tasks for a query_key are done (both pending and active), and mark the import job complete."""
+        if not query_key:
+            return
+        async with self.lock:
+            for p in self.pending:
+                if p[3] == query_key:
+                    return
+            for t in self.active.values():
+                if t.query_key == query_key:
+                    return
+        await db.mark_import_job_complete(query_key)
+        log.info(f"[Queue] Import job {query_key} is fully completed.")
+
+    async def _handle_limit_exceeded(self, message):
+        """Handle 'limit exceeded' notification from the leech bot."""
+        async with self.lock:
+            target_id = None
+            if message.reply_to_message:
+                target_id = message.reply_to_message.id
+            elif hasattr(message, "reply_to_message_id") and message.reply_to_message_id:
+                target_id = message.reply_to_message_id
+
+            if target_id and target_id in self.active:
+                task = self.active.pop(target_id)
+                self.pending.insert(0, (task.magnet, task.idx, task.user_id, task.query_key, task.session))
+                self.limit_exceeded_cooldown = datetime.datetime.now() + datetime.timedelta(seconds=180)
+                log.info(
+                    f"[Queue] Task #{task.idx} re-queued due to limit exceeded. "
+                    f"Cooldown set until {self.limit_exceeded_cooldown}."
+                )
+                await self.send_status_log(
+                    task.user_id,
+                    f"⚠️ Leech limit exceeded! Task #{task.idx} re-queued. "
+                    f"Queue paused for 3 minutes to let tasks finish."
+                )
+
+                async def retry_after_cooldown():
+                    await asyncio.sleep(180)
+                    async with self.lock:
+                        if self.limit_exceeded_cooldown and datetime.datetime.now() >= self.limit_exceeded_cooldown:
+                            self.limit_exceeded_cooldown = None
+                            log.info("[Queue] Limit exceeded cooldown expired.")
+                    asyncio.create_task(self._process_queue())
+
+                asyncio.create_task(retry_after_cooldown())
 
     # ── Status log ────────────────────────────────────────────────────────────
 
@@ -216,6 +273,9 @@ class LeechQueueManager:
                     if self.paused:
                         log.info("[Queue] Queue is PAUSED (disk full). Stopping send loop.")
                         break
+                    if self.limit_exceeded_cooldown and datetime.datetime.now() < self.limit_exceeded_cooldown:
+                        log.info(f"[Queue] Queue in limit exceeded cooldown until {self.limit_exceeded_cooldown}. Stopping send loop.")
+                        break
                     active_count = len(self.active)
                     if active_count >= 5:
                         log.info(f"[Queue] Active limit (5) reached. Slots: {list(self.active.keys())}")
@@ -264,6 +324,7 @@ class LeechQueueManager:
         """
         Called for EVERY message/edit in the leech group.
         - If it's a disk-full error → pause queue, alert admins.
+        - If it's a limit exceeded error → re-queue task, start cooldown.
         - If it's a completion → pop the task, schedule next.
         - If it shows 100% upload → mark the oldest task as upload-done
           so the watchdog knows when to auto-skip.
@@ -293,6 +354,12 @@ class LeechQueueManager:
             )
             return
 
+        # ── Limit exceeded path ────────────────────────────────────────────────
+        if is_limit_exceeded_message(text):
+            log.warning(f"[Queue] ⚠️ Limit exceeded detected: {text[:80]!r}")
+            await self._handle_limit_exceeded(message)
+            return
+
         # ── Completion path ───────────────────────────────────────────────────
         if is_completion_message(text):
             log.info(f"[Queue] ✅ Completion detected: {text[:80]!r}")
@@ -316,7 +383,8 @@ class LeechQueueManager:
 
         async with self.lock:
             if not self.active:
-                log.warning("[Queue] Completion received but no active tasks.")
+                log.warning("[Queue] Completion received but no active tasks. Kicking queue in case a slot opened.")
+                asyncio.create_task(self._process_queue())
                 return
 
             target_id = None
@@ -352,6 +420,7 @@ class LeechQueueManager:
 
         asyncio.create_task(self._process_queue())
         log.info(f"[Queue] _process_queue scheduled after task #{matched_task.idx}.")
+        await self._check_job_completion(matched_task.query_key)
 
 
 leech_queue = LeechQueueManager()

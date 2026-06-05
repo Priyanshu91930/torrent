@@ -16,6 +16,14 @@ async def clear_queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(f"🗑️ Cleared leech queue. Released/canceled <b>{count}</b> items.", parse_mode="HTML")
 
 
+@admin_only
+async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Resume the pending import jobs."""
+    user_id = update.effective_user.id
+    status = await do_resume_jobs(user_id)
+    await update.message.reply_text(status, parse_mode="HTML")
+
+
 async def _queue_links(user_id: int, query_key: str, links: list) -> None:
     """Add links to the queue, skipping already-sent ones from DB."""
     db_sent = await db.get_leech_sent(user_id, query_key)
@@ -94,24 +102,89 @@ async def process_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         await status_msg.edit_text(f"❌ Failed to process text file: {e}")
 
 
-async def resume_pending_import_jobs() -> None:
-    """Called on bot startup — resumes any unfinished import jobs from DB."""
+async def resume_pending_import_jobs(bot=None) -> None:
+    """Called on bot startup — notifies admin about unfinished jobs WITHOUT auto-starting.
+    
+    We deliberately do NOT auto-send on restart because the leech bot may still
+    have the old tasks running, causing 'tasks limit exceeded' errors.
+    The admin must send /resume to manually continue.
+    """
     try:
         jobs = await db.get_pending_import_jobs()
         if not jobs:
             log.info("[Import] No pending import jobs to resume.")
             return
 
-        log.info(f"[Import] Resuming {len(jobs)} pending import job(s) from DB...")
         import json
+        total_pending = 0
+        job_lines = []
         for job in jobs:
             user_id = job["user_id"]
             query_key = job["query_key"]
             links = json.loads(job["links_json"])
-            log.info(f"[Import] Resuming job {query_key} with {len(links)} total links for user {user_id}")
-            await _queue_links(user_id, query_key, links)
+            db_sent = await db.get_leech_sent(user_id, query_key)
+            pending_count = len(links) - len(db_sent)
+            total_pending += pending_count
+            job_lines.append(
+                f"• <code>{query_key}</code>: {len(db_sent)}/{len(links)} sent, "
+                f"<b>{pending_count} remaining</b>"
+            )
+
+        log.info(f"[Import] Found {len(jobs)} pending job(s) with {total_pending} total links. Waiting for /resume.")
+
+        # Alert all admins — do NOT start the queue automatically
+        if bot and total_pending > 0:
+            msg = (
+                f"🔄 <b>Bot restarted with pending import jobs!</b>\n\n"
+                f"{chr(10).join(job_lines)}\n\n"
+                f"⚠️ Queue is <b>NOT</b> auto-started to avoid conflicts with\n"
+                f"tasks still running in the leech group.\n\n"
+                f"Send /resume when you're ready to continue."
+            )
+            for admin_id in settings.ADMIN_IDS:
+                try:
+                    await bot.send_message(admin_id, msg, parse_mode="HTML")
+                except Exception as e:
+                    log.error(f"[Import] Could not alert admin {admin_id}: {e}")
+
     except Exception as e:
-        log.error(f"[Import] Error resuming import jobs: {e}")
+        log.error(f"[Import] Error checking pending import jobs: {e}")
+
+
+async def do_resume_jobs(user_id: int) -> str:
+    """Actually load and queue all pending import jobs. Called by /resume command."""
+    try:
+        jobs = await db.get_pending_import_jobs()
+        if not jobs:
+            return "ℹ️ No pending import jobs found."
+
+        import json
+        total_queued = 0
+        for job in jobs:
+            job_user_id = job["user_id"]
+            query_key = job["query_key"]
+            links = json.loads(job["links_json"])
+            db_sent = await db.get_leech_sent(job_user_id, query_key)
+            pending = [l for l in links if l not in db_sent]
+            if pending:
+                session = {
+                    "results": [{"magnet": l, "title": f"Link {i}"} for i, l in enumerate(links, 1)],
+                    "sent_magnets": set(db_sent),
+                    "query": None,
+                    "query_key": query_key,
+                }
+                await leech_queue.add_to_queue(links, job_user_id, query_key, session)
+                total_queued += len(pending)
+                log.info(f"[Import] Resumed job {query_key}: {len(pending)} links queued")
+
+        if total_queued:
+            return f"▶️ Resumed! <b>{total_queued}</b> links added to queue."
+        return "ℹ️ All jobs already completed — nothing to resume."
+
+    except Exception as e:
+        log.error(f"[Import] Error in do_resume_jobs: {e}")
+        return f"❌ Error resuming: {e}"
+
 
 
 @admin_only
