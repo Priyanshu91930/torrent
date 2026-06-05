@@ -174,7 +174,11 @@ class LeechQueueManager:
             await self._check_job_completion(task.query_key)
 
         if skipped:
-            asyncio.create_task(self._process_queue())
+            async def delayed_process():
+                log.info(f"[Queue] Waiting 60 seconds before sending next task (after auto-skip)...")
+                await asyncio.sleep(60)
+                asyncio.create_task(self._process_queue())
+            asyncio.create_task(delayed_process())
 
     async def _check_job_completion(self, query_key: str):
         """Check if all tasks for a query_key are done (both pending and active), and mark the import job complete."""
@@ -289,8 +293,8 @@ class LeechQueueManager:
                         log.info(f"[Queue] Queue in limit exceeded cooldown until {self.limit_exceeded_cooldown}. Stopping send loop.")
                         break
                     active_count = len(self.active)
-                    if active_count >= 5:
-                        log.info(f"[Queue] Active limit (5) reached. Slots: {list(self.active.keys())}")
+                    if active_count >= 1:
+                        log.info(f"[Queue] Active limit (1) reached. Slots: {list(self.active.keys())}")
                         break
                     if not self.pending:
                         log.info("[Queue] No more pending links.")
@@ -458,8 +462,13 @@ class LeechQueueManager:
                 f"✅ Task #{matched_task.idx} completed successfully!"
             )
 
-        asyncio.create_task(self._process_queue())
-        log.info(f"[Queue] _process_queue scheduled after task #{matched_task.idx}.")
+        async def delayed_process():
+            log.info(f"[Queue] Waiting 60 seconds before sending next task...")
+            await asyncio.sleep(60)
+            asyncio.create_task(self._process_queue())
+
+        asyncio.create_task(delayed_process())
+        log.info(f"[Queue] _process_queue scheduled (delayed 60s) after task #{matched_task.idx}.")
         await self._check_job_completion(matched_task.query_key)
 
 
