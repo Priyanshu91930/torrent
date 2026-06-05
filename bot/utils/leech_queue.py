@@ -34,9 +34,9 @@ def is_completion_message(text: str) -> bool:
         return False
     t = text.lower()
     keywords = [
-        "time taken", "download stopped", "stopped!", "completed",
-        "successfully uploaded", "elapsed:", "total files:",
-        "sent to bot pm", "have been sent", "index link:",
+        "time taken", "download stopped", "stopped!",
+        "successfully uploaded", "sent to bot pm", "have been sent",
+        "index link:", "completed successfully",
     ]
     return any(kw in t for kw in keywords)
 
