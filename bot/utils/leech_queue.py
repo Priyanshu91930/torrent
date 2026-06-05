@@ -7,7 +7,7 @@ from bot.utils.userbot import userbot
 from bot.config import settings
 
 # How long to wait after seeing "100%" before auto-skipping (seconds)
-STUCK_AFTER_UPLOAD_TIMEOUT = 600  # 10 minutes
+STUCK_AFTER_UPLOAD_TIMEOUT = 180  # 3 minutes
 
 # Hard cap: if a task hasn't completed within this many seconds, auto-skip regardless
 HARD_TIMEOUT_SECONDS = 3600  # 60 minutes
