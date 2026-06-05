@@ -41,6 +41,19 @@ def is_completion_message(text: str) -> bool:
     return any(kw in t for kw in keywords)
 
 
+def is_disk_full_message(text: str) -> bool:
+    """Return True if the leech bot failed because the server disk is full."""
+    if not text:
+        return False
+    t = text.lower()
+    return (
+        "no space left on device" in t
+        or "fallocate failed" in t
+        or "not enough space" in t
+        or "disk full" in t
+    )
+
+
 def is_upload_complete_message(text: str) -> bool:
     """Return True if text shows the file is at 100% upload progress (but not yet sent to PM)."""
     if not text:
@@ -98,8 +111,11 @@ class LeechQueueManager:
         self.active: dict[int, ActiveTask] = {}  # msg_id → ActiveTask
         self.lock = asyncio.Lock()
         self.is_sending = False
+        self.paused = False             # True when disk is full — stops sending new tasks
         # Background watchdog task reference
         self._watchdog_task: asyncio.Task | None = None
+        # Admin alert callback — set by main.py after bot starts
+        self._admin_alert_fn = None  # async fn(text: str)
 
     # ── Watchdog ──────────────────────────────────────────────────────────────
 
@@ -158,6 +174,14 @@ class LeechQueueManager:
             log.info(f"[Queue] Cleared queue ({count} items).")
             return count
 
+    async def alert_admins(self, text: str):
+        """Send an urgent alert to all admins."""
+        if self._admin_alert_fn:
+            try:
+                await self._admin_alert_fn(text)
+            except Exception as e:
+                log.error(f"[Queue] Failed to alert admins: {e}")
+
     async def add_to_queue(self, magnets, user_id, query_key, session):
         async with self.lock:
             if "sent_magnets" not in session:
@@ -176,6 +200,7 @@ class LeechQueueManager:
                 f"📥 Added {added} links to leech queue. Total pending: {len(self.pending)}"
             )
 
+        self.paused = False  # resume if it was paused before
         self.start_watchdog()
         asyncio.create_task(self._process_queue())
 
@@ -188,6 +213,9 @@ class LeechQueueManager:
         try:
             while True:
                 async with self.lock:
+                    if self.paused:
+                        log.info("[Queue] Queue is PAUSED (disk full). Stopping send loop.")
+                        break
                     active_count = len(self.active)
                     if active_count >= 5:
                         log.info(f"[Queue] Active limit (5) reached. Slots: {list(self.active.keys())}")
@@ -235,12 +263,34 @@ class LeechQueueManager:
     async def handle_message(self, message):
         """
         Called for EVERY message/edit in the leech group.
+        - If it's a disk-full error → pause queue, alert admins.
         - If it's a completion → pop the task, schedule next.
         - If it shows 100% upload → mark the oldest task as upload-done
           so the watchdog knows when to auto-skip.
         """
         text = (message.text or message.caption or "")
         if not text:
+            return
+
+        # ── Disk full path ────────────────────────────────────────────────────
+        if is_disk_full_message(text):
+            log.error(f"[Queue] 🛑 DISK FULL detected! Pausing entire queue.")
+            async with self.lock:
+                self.paused = True
+                # Put the failed task back at the front of pending so it retries after disk is cleared
+                if self.active:
+                    oldest_id = min(self.active.keys())
+                    task = self.active.pop(oldest_id)
+                    self.pending.insert(0, (task.magnet, task.idx, task.user_id, task.query_key, task.session))
+                    log.info(f"[Queue] Task #{task.idx} re-queued at front (will retry after disk cleared).")
+            await self.alert_admins(
+                "🛑 <b>DISK FULL on leech server!</b>\n"
+                "The leech bot reported: <i>No space left on device</i>\n\n"
+                "Queue has been <b>PAUSED</b>.\n"
+                "Please free up disk space on the server, then:\n"
+                "• Use /restart to restart the bot and resume\n"
+                "• Or use /cq to clear the queue"
+            )
             return
 
         # ── Completion path ───────────────────────────────────────────────────

@@ -96,6 +96,17 @@ async def post_init(application: Application) -> None:
                 userbot.add_handler(PyrogramEditedMessageHandler(handle_leech_edit), group=-1)
                 log.info(f"[OK] Leech handlers registered (NEW + EDITED, chat_id={leech_id})")
 
+                # Wire admin alert callback so disk-full events reach admins via the bot
+                async def _alert_admins(text: str):
+                    for admin_id in settings.ADMIN_IDS:
+                        try:
+                            await application.bot.send_message(admin_id, text, parse_mode="HTML")
+                        except Exception as exc:
+                            log.error(f"[Queue] Could not alert admin {admin_id}: {exc}")
+
+                leech_queue._admin_alert_fn = _alert_admins
+                log.info("[OK] Admin alert callback registered for disk-full events")
+
         except Exception as e:
             log.error(f"[Userbot] Failed to start userbot: {e}")
 
@@ -166,6 +177,25 @@ def main() -> None:
     app.add_handler(CommandHandler("blist", list_blacklist_command))
     app.add_handler(CommandHandler("clearqueue", clear_queue_command))
     app.add_handler(CommandHandler("cq", clear_queue_command))
+
+    # /restart — admin only, exits process so Docker restarts the container
+    from bot.handlers.admin import admin_only as _admin_only
+    import os as _os
+
+    @_admin_only
+    async def restart_command(update, context):
+        """Restart the bot container (Docker restart:always policy handles the restart)."""
+        await update.message.reply_text(
+            "🔄 <b>Restarting bot...</b>\nWill be back in a few seconds.",
+            parse_mode="HTML"
+        )
+        log.info(f"[Admin] Restart triggered by user {update.effective_user.id}")
+        # Give Telegram time to deliver the message, then exit
+        import asyncio as _asyncio
+        await _asyncio.sleep(1)
+        _os._exit(0)   # Hard exit — Docker restart:always policy will restart the container
+
+    app.add_handler(CommandHandler("restart", restart_command))
 
 
     # ── Document / file imports ────────────────────────────────────────────────
