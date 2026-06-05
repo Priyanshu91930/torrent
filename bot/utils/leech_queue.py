@@ -346,12 +346,6 @@ class LeechQueueManager:
         if not text:
             return
 
-        if not is_progress_update(text):
-            log.info(
-                f"[Queue] Received potential group event (ID={message.id}): {text[:140]!r} "
-                f"(reply_to={getattr(message.reply_to_message, 'id', None) or message.reply_to_message_id})"
-            )
-
         # ── Disk full path ────────────────────────────────────────────────────
         if is_disk_full_message(text):
             log.error(f"[Queue] 🛑 DISK FULL detected! Pausing entire queue.")
