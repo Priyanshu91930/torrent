@@ -12,6 +12,9 @@ STUCK_AFTER_UPLOAD_TIMEOUT = 180  # 3 minutes
 # Hard cap: if a task hasn't completed within this many seconds, auto-skip regardless
 HARD_TIMEOUT_SECONDS = 3600  # 60 minutes
 
+# Delay between task completion and sending the next task (seconds)
+NEXT_TASK_DELAY = 60
+
 
 def refresh_fsl_link(url: str) -> str:
     """Strip any old dynamic token suffixes and append current minute token."""
@@ -82,6 +85,20 @@ def is_limit_exceeded_message(text: str) -> bool:
     return "limit exceeded" in t or "tasks limit exceeded" in t
 
 
+def _get_reply_to_id(message) -> int | None:
+    """Extract the reply-to message ID from a Pyrogram message, handling various attribute names."""
+    # Try direct attribute first
+    if hasattr(message, 'reply_to_message') and message.reply_to_message:
+        return message.reply_to_message.id
+    # Pyrogram v2 uses reply_to_message_id
+    if hasattr(message, 'reply_to_message_id') and message.reply_to_message_id:
+        return message.reply_to_message_id
+    # Some versions use reply_to_top_message_id for threads
+    if hasattr(message, 'reply_to_top_message_id') and message.reply_to_top_message_id:
+        return message.reply_to_top_message_id
+    return None
+
+
 class ActiveTask:
     """Holds all state for one active leech slot."""
     __slots__ = (
@@ -110,7 +127,7 @@ class ActiveTask:
     def is_stuck(self) -> bool:
         """Return True if this task should be auto-skipped."""
         now = datetime.datetime.now()
-        # Case 1: upload hit 100% but no completion in 10 minutes
+        # Case 1: upload hit 100% but no completion in 3 minutes
         if self.upload_done_time:
             if (now - self.upload_done_time).total_seconds() > STUCK_AFTER_UPLOAD_TIMEOUT:
                 return True
@@ -147,10 +164,22 @@ class LeechQueueManager:
             log.info("[Queue] Watchdog started.")
 
     async def _watchdog_loop(self):
-        """Every 60 seconds, check for stuck tasks and auto-skip them."""
+        """Every 60 seconds, check for stuck tasks, and kick stalled queues."""
         while True:
             await asyncio.sleep(60)
             await self._auto_skip_stuck()
+            # Also check if queue is stalled (no active tasks but pending items)
+            await self._kick_stalled_queue()
+
+    async def _kick_stalled_queue(self):
+        """If there are pending items but no active tasks and we're not sending, restart the queue."""
+        async with self.lock:
+            if self.pending and not self.active and not self.is_sending and not self.paused:
+                if not self.limit_exceeded_cooldown or datetime.datetime.now() >= self.limit_exceeded_cooldown:
+                    log.info(f"[Queue] Watchdog: queue stalled with {len(self.pending)} pending items. Kicking...")
+        # Do this outside the lock
+        if self.pending and not self.active and not self.is_sending:
+            asyncio.create_task(self._process_queue())
 
     async def _auto_skip_stuck(self):
         """Find and release any stuck active tasks, then kick the queue."""
@@ -175,8 +204,8 @@ class LeechQueueManager:
 
         if skipped:
             async def delayed_process():
-                log.info(f"[Queue] Waiting 60 seconds before sending next task (after auto-skip)...")
-                await asyncio.sleep(60)
+                log.info(f"[Queue] Waiting {NEXT_TASK_DELAY}s before sending next task (after auto-skip)...")
+                await asyncio.sleep(NEXT_TASK_DELAY)
                 asyncio.create_task(self._process_queue())
             asyncio.create_task(delayed_process())
 
@@ -197,11 +226,7 @@ class LeechQueueManager:
     async def _handle_limit_exceeded(self, message):
         """Handle 'limit exceeded' notification from the leech bot."""
         async with self.lock:
-            target_id = None
-            if message.reply_to_message:
-                target_id = message.reply_to_message.id
-            elif hasattr(message, "reply_to_message_id") and message.reply_to_message_id:
-                target_id = message.reply_to_message_id
+            target_id = _get_reply_to_id(message)
 
             if target_id and target_id in self.active:
                 task = self.active.pop(target_id)
@@ -216,16 +241,31 @@ class LeechQueueManager:
                     f"⚠️ Leech limit exceeded! Task #{task.idx} re-queued. "
                     f"Queue paused for 3 minutes to let tasks finish."
                 )
+            elif self.active:
+                # Can't match by reply — just re-queue the oldest active task
+                oldest_id = min(self.active.keys())
+                task = self.active.pop(oldest_id)
+                self.pending.insert(0, (task.magnet, task.idx, task.user_id, task.query_key, task.session))
+                self.limit_exceeded_cooldown = datetime.datetime.now() + datetime.timedelta(seconds=180)
+                log.info(
+                    f"[Queue] Task #{task.idx} re-queued due to limit exceeded (oldest fallback). "
+                    f"Cooldown set until {self.limit_exceeded_cooldown}."
+                )
+                await self.send_status_log(
+                    task.user_id,
+                    f"⚠️ Leech limit exceeded! Task #{task.idx} re-queued. "
+                    f"Queue paused for 3 minutes to let tasks finish."
+                )
 
-                async def retry_after_cooldown():
-                    await asyncio.sleep(180)
-                    async with self.lock:
-                        if self.limit_exceeded_cooldown and datetime.datetime.now() >= self.limit_exceeded_cooldown:
-                            self.limit_exceeded_cooldown = None
-                            log.info("[Queue] Limit exceeded cooldown expired.")
-                    asyncio.create_task(self._process_queue())
+            async def retry_after_cooldown():
+                await asyncio.sleep(180)
+                async with self.lock:
+                    if self.limit_exceeded_cooldown and datetime.datetime.now() >= self.limit_exceeded_cooldown:
+                        self.limit_exceeded_cooldown = None
+                        log.info("[Queue] Limit exceeded cooldown expired.")
+                asyncio.create_task(self._process_queue())
 
-                asyncio.create_task(retry_after_cooldown())
+            asyncio.create_task(retry_after_cooldown())
 
     # ── Status log ────────────────────────────────────────────────────────────
 
@@ -325,6 +365,7 @@ class LeechQueueManager:
                         "total": len(session["results"]),
                         "last_idx": idx,
                     }
+                    log.info(f"[Queue] [{idx}] Sent successfully. msg_id={msg.id}. Waiting for completion...")
                     await asyncio.sleep(10)  # flood wait buffer between sends
 
                 except Exception as e:
@@ -339,7 +380,7 @@ class LeechQueueManager:
 
     async def handle_message(self, message):
         """
-        Called for EVERY message/edit in the leech group.
+        Called for EVERY message/edit in the leech group or PM.
         - If it's a disk-full error → pause queue, alert admins.
         - If it's a limit exceeded error → re-queue task, start cooldown.
         - If it's a completion → pop the task, schedule next.
@@ -379,7 +420,6 @@ class LeechQueueManager:
 
         # ── Completion path ───────────────────────────────────────────────────
         if is_completion_message(text):
-            log.info(f"[Queue] ✅ Completion detected: {text[:80]!r}")
             await self._release_task(message, text)
             return
 
@@ -400,52 +440,64 @@ class LeechQueueManager:
 
         async with self.lock:
             if not self.active:
-                log.warning("[Queue] Completion received but no active tasks. Kicking queue in case a slot opened.")
+                log.info("[Queue] Completion received but no active tasks. Kicking queue...")
                 asyncio.create_task(self._process_queue())
                 return
 
-            target_id = None
-            if message.reply_to_message:
-                target_id = message.reply_to_message.id
-            elif hasattr(message, "reply_to_message_id") and message.reply_to_message_id:
-                target_id = message.reply_to_message_id
+            # ── Try to match by reply_to_message_id ──────────────────────────
+            target_id = _get_reply_to_id(message)
 
             if target_id and target_id in self.active:
                 matched_task = self.active.pop(target_id)
-                log.info(f"[Queue] Task #{matched_task.idx} matched by reply ID.")
+                log.info(f"[Queue] ✅ Task #{matched_task.idx} matched by reply ID ({target_id}).")
             else:
-                matching_ids = []
-                # Fetch userbot names to verify if this is our task
-                ub_first = ""
-                ub_user = ""
-                if userbot and userbot.me:
-                    ub_first = userbot.me.first_name or ""
-                    ub_user = userbot.me.username or ""
-
+                # ── Fallback: since we only run 1 task at a time, any genuine
+                #    completion means our single active task is done ──────────
+                #    Verify it's plausibly ours by checking username or PM context
                 from pyrogram.enums import ChatType
-                is_our_completion = False
-                if message.chat and message.chat.type == ChatType.PRIVATE:
-                    is_our_completion = True
-                elif ub_first and ub_first.lower() in text.lower():
-                    is_our_completion = True
-                elif ub_user and ub_user.lower() in text.lower():
-                    is_our_completion = True
 
-                for msg_id, task in self.active.items():
-                    if is_our_completion:
-                        matching_ids.append(msg_id)
-                    elif task.user_name and task.user_name.lower() in text.lower():
-                        matching_ids.append(msg_id)
+                is_pm = (message.chat and message.chat.type == ChatType.PRIVATE)
+                is_our = False
 
-                if matching_ids:
-                    oldest_id = min(matching_ids)
+                if is_pm:
+                    is_our = True
+                else:
+                    # Check if userbot name or username appears in the text
+                    ub_first = ""
+                    ub_user = ""
+                    if userbot and userbot.me:
+                        ub_first = (userbot.me.first_name or "").lower()
+                        ub_user = (userbot.me.username or "").lower()
+                    tl = text.lower()
+
+                    if ub_first and ub_first in tl:
+                        is_our = True
+                    elif ub_user and ub_user in tl:
+                        is_our = True
+                    else:
+                        # Check any active task's user_name in the text
+                        for t in self.active.values():
+                            if t.user_name and t.user_name.lower() in tl:
+                                is_our = True
+                                break
+
+                    # LAST RESORT: If only 1 active task and completion text
+                    # has "by:" which is the leech bot's format, just accept it
+                    if not is_our and len(self.active) == 1:
+                        if "by:" in tl or "sent to bot pm" in tl or "t.me/c/" in tl:
+                            is_our = True
+                            log.info("[Queue] Accepting completion via single-active-task heuristic.")
+
+                if is_our:
+                    oldest_id = min(self.active.keys())
                     matched_task = self.active.pop(oldest_id)
                     log.info(
-                        f"[Queue] Task #{matched_task.idx} matched via fallback (is_our_completion={is_our_completion}) "
-                        f"(msg_id={oldest_id}). Remaining active: {len(self.active)}"
+                        f"[Queue] ✅ Task #{matched_task.idx} matched via fallback "
+                        f"(is_pm={is_pm}, target_id={target_id}). "
+                        f"Remaining active: {len(self.active)}"
                     )
                 else:
-                    log.warning(f"[Queue] Completion received, but username fallback not in text and target_id ({target_id}) not in active. Ignoring.")
+                    # Not our task — ignore silently (don't log to avoid noise)
                     return
 
         # I/O outside the lock
@@ -456,20 +508,23 @@ class LeechQueueManager:
                 f"❌ Task #{matched_task.idx} was stopped or failed by leech bot!"
             )
         else:
-            log.info(f"[Queue] Task #{matched_task.idx} completed.")
+            log.info(f"[Queue] Task #{matched_task.idx} completed successfully.")
             await self.send_status_log(
                 matched_task.user_id,
                 f"✅ Task #{matched_task.idx} completed successfully!"
             )
 
+        await self._check_job_completion(matched_task.query_key)
+
+        # Schedule next task after delay
         async def delayed_process():
-            log.info(f"[Queue] Waiting 60 seconds before sending next task...")
-            await asyncio.sleep(60)
+            log.info(f"[Queue] Waiting {NEXT_TASK_DELAY}s before sending next task...")
+            await asyncio.sleep(NEXT_TASK_DELAY)
+            log.info(f"[Queue] Delay complete. Starting next task from queue...")
             asyncio.create_task(self._process_queue())
 
         asyncio.create_task(delayed_process())
-        log.info(f"[Queue] _process_queue scheduled (delayed 60s) after task #{matched_task.idx}.")
-        await self._check_job_completion(matched_task.query_key)
+        log.info(f"[Queue] Next task scheduled in {NEXT_TASK_DELAY}s after task #{matched_task.idx}.")
 
 
 leech_queue = LeechQueueManager()

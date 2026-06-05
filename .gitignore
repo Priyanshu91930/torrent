@@ -14,7 +14,7 @@ venv/
 env/
 
 # Environment / secrets
-.env
+# .env  (pushed to repo per user request)
 
 # Runtime data
 data/
