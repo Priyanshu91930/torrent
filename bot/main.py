@@ -71,41 +71,30 @@ async def post_init(application: Application) -> None:
                 log.error("[Userbot] Open that group in Telegram with your account, then restart.")
             elif leech_id and leech_found:
                 log.info("[OK] Leech group is ready for sending!")
-                
-                # Register leech completion listener handler
+
                 from pyrogram.handlers import MessageHandler as PyrogramMessageHandler
                 from pyrogram.handlers import EditedMessageHandler as PyrogramEditedMessageHandler
                 from bot.utils.leech_queue import leech_queue
 
-                # The leech bot EDITS its initial message when download is done.
-                # So we must listen for BOTH new messages AND edited messages.
-                async def handle_leech_reply(client, message):
+                # Route ALL messages+edits from leech group through handle_message
+                # which auto-detects: completion, 100% upload progress, or ignores
+                async def handle_leech_new(client, message):
                     chat_id = message.chat.id if message.chat else None
-                    sender = message.from_user.id if message.from_user else (message.sender_chat.id if message.sender_chat else 'unknown')
                     text_preview = (message.text or message.caption or '')[:80]
-                    log.info(f"[Queue] 📩 Pyrogram msg [NEW]: chat={chat_id} from={sender} text={text_preview!r}")
+                    log.info(f"[Queue] 📩 [NEW] from={getattr(message.from_user, 'id', '?')}: {text_preview!r}")
                     if chat_id == leech_id:
-                        await leech_queue.handle_completion(message)
+                        await leech_queue.handle_message(message)
 
                 async def handle_leech_edit(client, message):
                     chat_id = message.chat.id if message.chat else None
-                    sender = message.from_user.id if message.from_user else (message.sender_chat.id if message.sender_chat else 'unknown')
                     text_preview = (message.text or message.caption or '')[:80]
-                    log.info(f"[Queue] ✏️ Pyrogram msg [EDIT]: chat={chat_id} from={sender} text={text_preview!r}")
+                    log.info(f"[Queue] ✏️ [EDIT] from={getattr(message.from_user, 'id', '?')}: {text_preview!r}")
                     if chat_id == leech_id:
-                        await leech_queue.handle_completion(message)
+                        await leech_queue.handle_message(message)
 
-                # Listen for new messages
-                userbot.add_handler(
-                    PyrogramMessageHandler(handle_leech_reply),
-                    group=-1
-                )
-                # Also listen for EDITED messages — leech bots edit their status messages
-                userbot.add_handler(
-                    PyrogramEditedMessageHandler(handle_leech_edit),
-                    group=-1
-                )
-                log.info(f"[OK] Registered leech completion listener (NEW + EDITED messages, chat_id={leech_id})")
+                userbot.add_handler(PyrogramMessageHandler(handle_leech_new), group=-1)
+                userbot.add_handler(PyrogramEditedMessageHandler(handle_leech_edit), group=-1)
+                log.info(f"[OK] Leech handlers registered (NEW + EDITED, chat_id={leech_id})")
 
         except Exception as e:
             log.error(f"[Userbot] Failed to start userbot: {e}")
@@ -177,31 +166,6 @@ def main() -> None:
     app.add_handler(CommandHandler("blist", list_blacklist_command))
     app.add_handler(CommandHandler("clearqueue", clear_queue_command))
     app.add_handler(CommandHandler("cq", clear_queue_command))
-
-    # /skiplink — manually release the oldest stuck active slot
-    from bot.handlers.admin import admin_only as _admin_only
-    from bot.utils.leech_queue import leech_queue as _leech_queue
-
-    @_admin_only
-    async def skiplink_command(update, context):
-        """Manually release the oldest active queue slot (for stuck/corrupt links)."""
-        async with _leech_queue.lock:
-            if not _leech_queue.active:
-                await update.message.reply_text("ℹ️ No active tasks in queue.")
-                return
-            oldest_msg_id = min(_leech_queue.active.keys())
-            magnet, idx, user_id, query_key, session, start_time = _leech_queue.active.pop(oldest_msg_id)
-
-        import asyncio
-        asyncio.create_task(_leech_queue._process_queue())
-        await update.message.reply_text(
-            f"⏭️ Skipped task <b>#{idx}</b> (msg_id={oldest_msg_id}).\n"
-            f"Next link will be sent shortly.",
-            parse_mode="HTML"
-        )
-
-    app.add_handler(CommandHandler("skiplink", skiplink_command))
-    app.add_handler(CommandHandler("sl", skiplink_command))
 
 
     # ── Document / file imports ────────────────────────────────────────────────

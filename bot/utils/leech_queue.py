@@ -6,12 +6,17 @@ from bot.db.models import db
 from bot.utils.userbot import userbot
 from bot.config import settings
 
+# How long to wait after seeing "100%" before auto-skipping (seconds)
+STUCK_AFTER_UPLOAD_TIMEOUT = 600  # 10 minutes
+
+# Hard cap: if a task hasn't completed within this many seconds, auto-skip regardless
+HARD_TIMEOUT_SECONDS = 3600  # 60 minutes
+
+
 def refresh_fsl_link(url: str) -> str:
     """Strip any old dynamic token suffixes and append current minute token."""
     if not url:
         return url
-    
-    # Check if this is an FSL / FSLv2 link
     if "hub.homelander.buzz" in url or "fsl." in url or "cdn." in url:
         url = re.sub(r'(_1\d+|1\d+)$', '', url)
         minutes = datetime.datetime.now().minute
@@ -22,28 +27,118 @@ def refresh_fsl_link(url: str) -> str:
         log.info(f"[Queue] Refreshed token for FSL link (minute={minutes})")
     return url
 
-def is_completion_message(message) -> bool:
-    """Check if the message is a genuine completion or stopped notification."""
-    text = (message.text or message.caption or "").lower()
+
+def is_completion_message(text: str) -> bool:
+    """Return True if text indicates a finished (or failed) leech download."""
     if not text:
         return False
-        
-    # Standard indicators for finished leech downloads in leech groups
-    completion_keywords = [
-        "time taken", "download stopped", "stopped!", "completed", 
-        "done", "successfully uploaded", "elapsed:", "total files:",
-        "sent to bot pm", "have been sent", "index link:"
+    t = text.lower()
+    keywords = [
+        "time taken", "download stopped", "stopped!", "completed",
+        "successfully uploaded", "elapsed:", "total files:",
+        "sent to bot pm", "have been sent", "index link:",
     ]
-    if any(kw in text for kw in completion_keywords):
-        return True
-    return False
+    return any(kw in t for kw in keywords)
+
+
+def is_upload_complete_message(text: str) -> bool:
+    """Return True if text shows the file is at 100% upload progress (but not yet sent to PM)."""
+    if not text:
+        return False
+    t = text.lower()
+    # Leech bots often show "100%" during the upload phase before the final completion edit
+    return "100%" in t and ("upload" in t or "leech" in t or "progress" in t or "%" in t)
+
+
+class ActiveTask:
+    """Holds all state for one active leech slot."""
+    __slots__ = (
+        "magnet", "idx", "user_id", "query_key", "session",
+        "start_time", "upload_done_time",
+    )
+
+    def __init__(self, magnet, idx, user_id, query_key, session):
+        self.magnet = magnet
+        self.idx = idx
+        self.user_id = user_id
+        self.query_key = query_key
+        self.session = session
+        self.start_time = datetime.datetime.now()
+        self.upload_done_time: datetime.datetime | None = None  # set when 100% seen
+
+    def mark_upload_done(self):
+        if self.upload_done_time is None:
+            self.upload_done_time = datetime.datetime.now()
+            log.info(
+                f"[Queue] Task #{self.idx}: upload reached 100%. "
+                f"Will auto-skip in {STUCK_AFTER_UPLOAD_TIMEOUT//60} min if no completion."
+            )
+
+    def is_stuck(self) -> bool:
+        """Return True if this task should be auto-skipped."""
+        now = datetime.datetime.now()
+        # Case 1: upload hit 100% but no completion in 10 minutes
+        if self.upload_done_time:
+            if (now - self.upload_done_time).total_seconds() > STUCK_AFTER_UPLOAD_TIMEOUT:
+                return True
+        # Case 2: hard cap — running for more than 60 minutes total
+        if (now - self.start_time).total_seconds() > HARD_TIMEOUT_SECONDS:
+            return True
+        return False
+
+    def stuck_reason(self) -> str:
+        if self.upload_done_time:
+            return f"stuck at 100% upload for >{STUCK_AFTER_UPLOAD_TIMEOUT//60} min"
+        return f"hard timeout >{HARD_TIMEOUT_SECONDS//60} min"
+
 
 class LeechQueueManager:
     def __init__(self):
-        self.pending = []  # items: (magnet, idx, user_id, query_key, session)
-        self.active = {}   # msg_id -> (magnet, idx, user_id, query_key, session, start_time)
+        self.pending: list = []         # (magnet, idx, user_id, query_key, session)
+        self.active: dict[int, ActiveTask] = {}  # msg_id → ActiveTask
         self.lock = asyncio.Lock()
         self.is_sending = False
+        # Background watchdog task reference
+        self._watchdog_task: asyncio.Task | None = None
+
+    # ── Watchdog ──────────────────────────────────────────────────────────────
+
+    def start_watchdog(self):
+        """Start the background watchdog that auto-skips stuck tasks."""
+        if self._watchdog_task is None or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+            log.info("[Queue] Watchdog started.")
+
+    async def _watchdog_loop(self):
+        """Every 60 seconds, check for stuck tasks and auto-skip them."""
+        while True:
+            await asyncio.sleep(60)
+            await self._auto_skip_stuck()
+
+    async def _auto_skip_stuck(self):
+        """Find and release any stuck active tasks, then kick the queue."""
+        skipped = []
+        async with self.lock:
+            for msg_id, task in list(self.active.items()):
+                if task.is_stuck():
+                    self.active.pop(msg_id)
+                    skipped.append(task)
+
+        for task in skipped:
+            reason = task.stuck_reason()
+            log.warning(
+                f"[Queue] ⏭️ Auto-skipping task #{task.idx} ({reason}). "
+                f"Sending next link..."
+            )
+            await self.send_status_log(
+                task.user_id,
+                f"⏭️ Task #{task.idx} auto-skipped ({reason}). Moving to next link."
+            )
+
+        if skipped:
+            asyncio.create_task(self._process_queue())
+
+    # ── Status log ────────────────────────────────────────────────────────────
 
     async def send_status_log(self, user_id: int, text: str):
         """Send status updates directly to the user's Telegram PM."""
@@ -53,33 +148,36 @@ class LeechQueueManager:
         except Exception as e:
             log.error(f"[Queue] Failed to send status log to user {user_id}: {e}")
 
+    # ── Queue management ──────────────────────────────────────────────────────
+
     async def clear_queue(self) -> int:
-        """Clear all active and pending items in the queue."""
         async with self.lock:
-            pending_count = len(self.pending)
-            active_count = len(self.active)
+            count = len(self.pending) + len(self.active)
             self.pending.clear()
             self.active.clear()
-            log.info(f"[Queue] Cleared queue. Released {pending_count} pending and {active_count} active items.")
-            return pending_count + active_count
+            log.info(f"[Queue] Cleared queue ({count} items).")
+            return count
 
     async def add_to_queue(self, magnets, user_id, query_key, session):
         async with self.lock:
             if "sent_magnets" not in session:
                 session["sent_magnets"] = set()
             sent_set = session["sent_magnets"]
-            
-            added_count = 0
+
+            added = 0
             for idx, magnet in enumerate(magnets, start=1):
                 if magnet not in sent_set:
                     self.pending.append((magnet, idx, user_id, query_key, session))
-                    added_count += 1
-            
-            log.info(f"[Queue] Added {added_count} links to queue. Pending: {len(self.pending)}")
-            await self.send_status_log(user_id, f"📥 Added {added_count} links to leech queue. Total pending: {len(self.pending)}")
-            
-            # Trigger sending the initial batch of up to 5
-            asyncio.create_task(self._process_queue())
+                    added += 1
+
+            log.info(f"[Queue] Added {added} links. Pending: {len(self.pending)}")
+            await self.send_status_log(
+                user_id,
+                f"📥 Added {added} links to leech queue. Total pending: {len(self.pending)}"
+            )
+
+        self.start_watchdog()
+        asyncio.create_task(self._process_queue())
 
     async def _process_queue(self):
         async with self.lock:
@@ -90,54 +188,40 @@ class LeechQueueManager:
         try:
             while True:
                 async with self.lock:
-                    # Clean up timed-out active tasks (e.g., active for > 15 minutes)
-                    now = datetime.datetime.now()
-                    timed_out_ids = []
-                    for msg_id, val in list(self.active.items()):
-                        start_time = val[5] if len(val) > 5 else now
-                        if (now - start_time).total_seconds() > 900: # 15 minutes
-                            timed_out_ids.append(msg_id)
-                    
-                    for msg_id in timed_out_ids:
-                        magnet, idx, user_id, query_key, session, _ = self.active.pop(msg_id)
-                        log.warning(f"[Queue] Task #{idx} timed out after 15 minutes. Removing from active.")
-                        await self.send_status_log(user_id, f"⚠️ Task #{idx} timed out (15 mins) and was auto-released to continue the queue.")
-
-                    if len(self.active) >= 5:
-                        log.info(f"[Queue] Active limit (5) reached. Active messages: {list(self.active.keys())}")
+                    active_count = len(self.active)
+                    if active_count >= 5:
+                        log.info(f"[Queue] Active limit (5) reached. Slots: {list(self.active.keys())}")
                         break
                     if not self.pending:
-                        log.info("[Queue] No more pending links in queue.")
+                        log.info("[Queue] No more pending links.")
                         break
-                    # Get next item
                     magnet, idx, user_id, query_key, session = self.pending.pop(0)
 
-                # Send this item
+                # Send this item outside the lock
                 try:
-                    refreshed_magnet = refresh_fsl_link(magnet)
-                    
-                    log.info(f"[Queue] [{idx}] Sending refreshed link to leech group")
-                    await self.send_status_log(user_id, f"🚀 Sending task #{idx} to leech group...\nLink: {refreshed_magnet}")
-                    
-                    cmd = f"/l {refreshed_magnet}"
-                    if refreshed_magnet.lower().endswith((".zip", ".rar")):
+                    refreshed = refresh_fsl_link(magnet)
+                    log.info(f"[Queue] [{idx}] Sending to leech group")
+                    await self.send_status_log(user_id, f"🚀 Sending task #{idx} to leech group...")
+
+                    cmd = f"/l {refreshed}"
+                    if refreshed.lower().endswith((".zip", ".rar")):
                         cmd += " -e"
 
                     msg = await userbot.send_message(settings.LEECH_GROUP_ID, cmd)
-                    
+
                     async with self.lock:
-                        self.active[msg.id] = (magnet, idx, user_id, query_key, session, datetime.datetime.now())
+                        task = ActiveTask(magnet, idx, user_id, query_key, session)
+                        self.active[msg.id] = task
                         session["sent_magnets"].add(magnet)
 
                     await db.mark_leech_sent(user_id, query_key, magnet, idx)
                     session["leech_progress"] = {
                         "sent": len(session["sent_magnets"]),
                         "total": len(session["results"]),
-                        "last_idx": idx
+                        "last_idx": idx,
                     }
-                    
-                    # Sleep 10s between sending to prevent Telegram FloodWait
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(10)  # flood wait buffer between sends
+
                 except Exception as e:
                     log.error(f"[Queue] Error sending link #{idx}: {e}")
                     await self.send_status_log(user_id, f"⚠️ Error sending link #{idx}: {e}")
@@ -146,67 +230,78 @@ class LeechQueueManager:
             async with self.lock:
                 self.is_sending = False
 
-    async def handle_completion(self, reply_msg):
-        """Handle a completion message from the leech bot.
-        
-        The leech bot sends completion as a standalone message (NOT a reply).
-        So we use two strategies:
-        1. If the message is a reply, match by reply_to message ID.
-        2. If NOT a reply, match to the oldest active task (FIFO order).
-        """
-        # Make sure it's a real completed or stopped notification first
-        log.debug(f"[Queue] handle_completion called. active={len(self.active)}, pending={len(self.pending)}")
+    # ── Completion & progress detection ───────────────────────────────────────
 
-        if not is_completion_message(reply_msg):
-            log.debug("[Queue] Message is NOT a completion message, ignoring.")
+    async def handle_message(self, message):
+        """
+        Called for EVERY message/edit in the leech group.
+        - If it's a completion → pop the task, schedule next.
+        - If it shows 100% upload → mark the oldest task as upload-done
+          so the watchdog knows when to auto-skip.
+        """
+        text = (message.text or message.caption or "")
+        if not text:
             return
 
-        log.info(f"[Queue] ✅ Completion message detected!")
+        # ── Completion path ───────────────────────────────────────────────────
+        if is_completion_message(text):
+            log.info(f"[Queue] ✅ Completion detected: {text[:80]!r}")
+            await self._release_task(message, text)
+            return
 
-        text = (reply_msg.text or reply_msg.caption or "").lower()
-        is_stopped = "stopped" in text or "stopped!" in text or "download stopped" in text
+        # ── 100% upload path ──────────────────────────────────────────────────
+        if is_upload_complete_message(text):
+            async with self.lock:
+                if not self.active:
+                    return
+                # Mark the oldest active task as upload-complete
+                oldest_id = min(self.active.keys())
+                self.active[oldest_id].mark_upload_done()
 
-        # Extract task info inside lock, then do I/O outside the lock
-        matched_idx = None
-        matched_user_id = None
+    async def _release_task(self, message, text: str):
+        """Pop the matching active task and trigger next in queue."""
+        is_stopped = "stopped" in text.lower() or "download stopped" in text.lower()
+
+        matched_task: ActiveTask | None = None
 
         async with self.lock:
             if not self.active:
-                log.warning("[Queue] Completion received but no active tasks found.")
+                log.warning("[Queue] Completion received but no active tasks.")
                 return
 
             target_id = None
-
-            # Strategy 1: Message is a reply — match by replied-to message ID
-            if reply_msg.reply_to_message:
-                target_id = reply_msg.reply_to_message.id
-            elif hasattr(reply_msg, "reply_to_message_id") and reply_msg.reply_to_message_id:
-                target_id = reply_msg.reply_to_message_id
+            if message.reply_to_message:
+                target_id = message.reply_to_message.id
+            elif hasattr(message, "reply_to_message_id") and message.reply_to_message_id:
+                target_id = message.reply_to_message_id
 
             if target_id and target_id in self.active:
-                # Exact match found
-                magnet, idx, user_id, query_key, session, _ = self.active.pop(target_id)
-                log.info(f"[Queue] Task #{idx} matched by reply_to_message ID.")
+                matched_task = self.active.pop(target_id)
+                log.info(f"[Queue] Task #{matched_task.idx} matched by reply ID.")
             else:
-                # Strategy 2: Standalone message — release oldest active task (FIFO)
-                oldest_msg_id = min(self.active.keys())
-                magnet, idx, user_id, query_key, session, _ = self.active.pop(oldest_msg_id)
-                log.info(f"[Queue] Completion matched to oldest active task #{idx} (msg_id={oldest_msg_id}) via FIFO. Remaining active: {len(self.active)}")
+                oldest_id = min(self.active.keys())
+                matched_task = self.active.pop(oldest_id)
+                log.info(
+                    f"[Queue] Task #{matched_task.idx} matched via FIFO "
+                    f"(msg_id={oldest_id}). Remaining active: {len(self.active)}"
+                )
 
-            matched_idx = idx
-            matched_user_id = user_id
-
-        # ── Lock is now RELEASED — do I/O and scheduling outside ─────────────
+        # I/O outside the lock
         if is_stopped:
-            log.info(f"[Queue] Task #{matched_idx} stopped/failed.")
-            await self.send_status_log(matched_user_id, f"❌ Task #{matched_idx} was stopped or failed by leech bot!")
+            log.info(f"[Queue] Task #{matched_task.idx} stopped/failed.")
+            await self.send_status_log(
+                matched_task.user_id,
+                f"❌ Task #{matched_task.idx} was stopped or failed by leech bot!"
+            )
         else:
-            log.info(f"[Queue] Task #{matched_idx} completed.")
-            await self.send_status_log(matched_user_id, f"✅ Task #{matched_idx} completed successfully!")
+            log.info(f"[Queue] Task #{matched_task.idx} completed.")
+            await self.send_status_log(
+                matched_task.user_id,
+                f"✅ Task #{matched_task.idx} completed successfully!"
+            )
 
-        # Trigger processing next in queue — lock is FREE now, no deadlock
         asyncio.create_task(self._process_queue())
-        log.info(f"[Queue] _process_queue scheduled after task #{matched_idx} completion.")
+        log.info(f"[Queue] _process_queue scheduled after task #{matched_task.idx}.")
+
 
 leech_queue = LeechQueueManager()
-
