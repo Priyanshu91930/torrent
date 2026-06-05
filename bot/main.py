@@ -71,27 +71,25 @@ async def post_init(application: Application) -> None:
                 
                 # Register leech completion listener handler
                 from pyrogram.handlers import MessageHandler as PyrogramMessageHandler
-                from pyrogram import filters as pyrogram_filters
                 from bot.utils.leech_queue import leech_queue
 
-                # Pyrogram's filters.chat() works with the full negative ID for supergroups
-                # Strip -100 prefix to get the raw peer ID for chat filter
-                raw_leech_id = int(str(leech_id).replace("-100", "")) if str(leech_id).startswith("-100") else leech_id
-
+                # NO chat filter — receive ALL messages the userbot sees
+                # We filter manually in the handler so we can see what's happening
                 async def handle_leech_reply(client, message):
-                    log.info(f"[Queue] 📩 Pyrogram received message in leech group from {message.from_user.id if message.from_user else 'unknown'}: {(message.text or '')[:80]}")
-                    await leech_queue.handle_completion(message)
+                    chat_id = message.chat.id if message.chat else None
+                    sender = message.from_user.id if message.from_user else (message.sender_chat.id if message.sender_chat else 'unknown')
+                    text_preview = (message.text or message.caption or '')[:60]
+                    log.info(f"[Queue] 📩 Pyrogram msg: chat={chat_id} from={sender} text={text_preview!r}")
+                    # Only process messages from our leech group
+                    if chat_id == leech_id:
+                        await leech_queue.handle_completion(message)
 
-                # Use group=-1 so this handler runs before all other handlers
-                # Try both the raw and full ID to make sure we match
+                # Register with NO filter — catch everything to diagnose
                 userbot.add_handler(
-                    PyrogramMessageHandler(
-                        handle_leech_reply,
-                        filters=pyrogram_filters.chat([leech_id, raw_leech_id])
-                    ),
+                    PyrogramMessageHandler(handle_leech_reply),
                     group=-1
                 )
-                log.info(f"[OK] Registered leech completion listener handler (chat_id={leech_id}, raw={raw_leech_id})")
+                log.info(f"[OK] Registered leech completion listener (no filter, manual check for chat_id={leech_id})")
 
         except Exception as e:
             log.error(f"[Userbot] Failed to start userbot: {e}")
