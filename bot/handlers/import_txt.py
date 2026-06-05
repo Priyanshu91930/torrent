@@ -27,11 +27,16 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def _queue_links(user_id: int, query_key: str, links: list) -> None:
     """Add links to the queue, skipping already-sent ones from DB."""
     db_sent = await db.get_leech_sent(user_id, query_key)
+    user_db = await db.get_user(user_id)
+    user_name = "Priyanshu"
+    if user_db:
+        user_name = user_db.get("first_name") or user_db.get("username") or "Priyanshu"
     session = {
         "results": [{"magnet": link, "title": f"Link {i}"} for i, link in enumerate(links, 1)],
         "sent_magnets": set(db_sent),
         "query": None,
         "query_key": query_key,
+        "user_name": user_name,
     }
     pending = [l for l in links if l not in db_sent]
     log.info(f"[Import] Resuming job {query_key}: {len(pending)} pending / {len(db_sent)} already sent")

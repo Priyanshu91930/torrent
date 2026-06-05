@@ -113,6 +113,11 @@ class Database:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def get_user(self, user_id: int) -> Optional[dict]:
+        async with self._conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
     async def get_user_count(self) -> int:
         async with self._conn.execute("SELECT COUNT(*) FROM users") as cur:
             row = await cur.fetchone()

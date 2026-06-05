@@ -75,10 +75,10 @@ class ActiveTask:
     """Holds all state for one active leech slot."""
     __slots__ = (
         "magnet", "idx", "user_id", "query_key", "session",
-        "start_time", "upload_done_time",
+        "start_time", "upload_done_time", "user_name",
     )
 
-    def __init__(self, magnet, idx, user_id, query_key, session):
+    def __init__(self, magnet, idx, user_id, query_key, session, user_name="Priyanshu"):
         self.magnet = magnet
         self.idx = idx
         self.user_id = user_id
@@ -86,6 +86,7 @@ class ActiveTask:
         self.session = session
         self.start_time = datetime.datetime.now()
         self.upload_done_time: datetime.datetime | None = None  # set when 100% seen
+        self.user_name = user_name
 
     def mark_upload_done(self):
         if self.upload_done_time is None:
@@ -298,7 +299,8 @@ class LeechQueueManager:
                     msg = await userbot.send_message(settings.LEECH_GROUP_ID, cmd)
 
                     async with self.lock:
-                        task = ActiveTask(magnet, idx, user_id, query_key, session)
+                        user_name = session.get("user_name", "Priyanshu")
+                        task = ActiveTask(magnet, idx, user_id, query_key, session, user_name)
                         self.active[msg.id] = task
                         session["sent_magnets"].add(magnet)
 
@@ -397,12 +399,21 @@ class LeechQueueManager:
                 matched_task = self.active.pop(target_id)
                 log.info(f"[Queue] Task #{matched_task.idx} matched by reply ID.")
             else:
-                oldest_id = min(self.active.keys())
-                matched_task = self.active.pop(oldest_id)
-                log.info(
-                    f"[Queue] Task #{matched_task.idx} matched via FIFO "
-                    f"(msg_id={oldest_id}). Remaining active: {len(self.active)}"
-                )
+                matching_ids = []
+                for msg_id, task in self.active.items():
+                    if task.user_name and task.user_name.lower() in text.lower():
+                        matching_ids.append(msg_id)
+
+                if matching_ids:
+                    oldest_id = min(matching_ids)
+                    matched_task = self.active.pop(oldest_id)
+                    log.info(
+                        f"[Queue] Task #{matched_task.idx} matched via username fallback '{matched_task.user_name}' "
+                        f"(msg_id={oldest_id}). Remaining active: {len(self.active)}"
+                    )
+                else:
+                    log.warning(f"[Queue] Completion received, but username fallback not in text and target_id ({target_id}) not in active. Ignoring.")
+                    return
 
         # I/O outside the lock
         if is_stopped:

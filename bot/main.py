@@ -81,14 +81,14 @@ async def post_init(application: Application) -> None:
                 async def handle_leech_new(client, message):
                     chat_id = message.chat.id if message.chat else None
                     text_preview = (message.text or message.caption or '')[:80]
-                    log.info(f"[Queue] 📩 [NEW] from={getattr(message.from_user, 'id', '?')}: {text_preview!r}")
+                    log.debug(f"[Queue] 📩 [NEW] from={getattr(message.from_user, 'id', '?')}: {text_preview!r}")
                     if chat_id == leech_id:
                         await leech_queue.handle_message(message)
 
                 async def handle_leech_edit(client, message):
                     chat_id = message.chat.id if message.chat else None
                     text_preview = (message.text or message.caption or '')[:80]
-                    log.info(f"[Queue] ✏️ [EDIT] from={getattr(message.from_user, 'id', '?')}: {text_preview!r}")
+                    log.debug(f"[Queue] ✏️ [EDIT] from={getattr(message.from_user, 'id', '?')}: {text_preview!r}")
                     if chat_id == leech_id:
                         await leech_queue.handle_message(message)
 
