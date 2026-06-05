@@ -400,15 +400,30 @@ class LeechQueueManager:
                 log.info(f"[Queue] Task #{matched_task.idx} matched by reply ID.")
             else:
                 matching_ids = []
+                # Fetch userbot names to verify if this is our task
+                ub_first = ""
+                ub_user = ""
+                if userbot and userbot.me:
+                    ub_first = userbot.me.first_name or ""
+                    ub_user = userbot.me.username or ""
+
+                is_our_completion = False
+                if ub_first and ub_first.lower() in text.lower():
+                    is_our_completion = True
+                elif ub_user and ub_user.lower() in text.lower():
+                    is_our_completion = True
+
                 for msg_id, task in self.active.items():
-                    if task.user_name and task.user_name.lower() in text.lower():
+                    if is_our_completion:
+                        matching_ids.append(msg_id)
+                    elif task.user_name and task.user_name.lower() in text.lower():
                         matching_ids.append(msg_id)
 
                 if matching_ids:
                     oldest_id = min(matching_ids)
                     matched_task = self.active.pop(oldest_id)
                     log.info(
-                        f"[Queue] Task #{matched_task.idx} matched via username fallback '{matched_task.user_name}' "
+                        f"[Queue] Task #{matched_task.idx} matched via fallback (is_our_completion={is_our_completion}) "
                         f"(msg_id={oldest_id}). Remaining active: {len(self.active)}"
                     )
                 else:
