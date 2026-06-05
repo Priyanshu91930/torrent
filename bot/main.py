@@ -71,25 +71,38 @@ async def post_init(application: Application) -> None:
                 
                 # Register leech completion listener handler
                 from pyrogram.handlers import MessageHandler as PyrogramMessageHandler
+                from pyrogram.handlers import EditedMessageHandler as PyrogramEditedMessageHandler
                 from bot.utils.leech_queue import leech_queue
 
-                # NO chat filter — receive ALL messages the userbot sees
-                # We filter manually in the handler so we can see what's happening
+                # The leech bot EDITS its initial message when download is done.
+                # So we must listen for BOTH new messages AND edited messages.
                 async def handle_leech_reply(client, message):
                     chat_id = message.chat.id if message.chat else None
                     sender = message.from_user.id if message.from_user else (message.sender_chat.id if message.sender_chat else 'unknown')
-                    text_preview = (message.text or message.caption or '')[:60]
-                    log.info(f"[Queue] 📩 Pyrogram msg: chat={chat_id} from={sender} text={text_preview!r}")
-                    # Only process messages from our leech group
+                    text_preview = (message.text or message.caption or '')[:80]
+                    log.info(f"[Queue] 📩 Pyrogram msg [NEW]: chat={chat_id} from={sender} text={text_preview!r}")
                     if chat_id == leech_id:
                         await leech_queue.handle_completion(message)
 
-                # Register with NO filter — catch everything to diagnose
+                async def handle_leech_edit(client, message):
+                    chat_id = message.chat.id if message.chat else None
+                    sender = message.from_user.id if message.from_user else (message.sender_chat.id if message.sender_chat else 'unknown')
+                    text_preview = (message.text or message.caption or '')[:80]
+                    log.info(f"[Queue] ✏️ Pyrogram msg [EDIT]: chat={chat_id} from={sender} text={text_preview!r}")
+                    if chat_id == leech_id:
+                        await leech_queue.handle_completion(message)
+
+                # Listen for new messages
                 userbot.add_handler(
                     PyrogramMessageHandler(handle_leech_reply),
                     group=-1
                 )
-                log.info(f"[OK] Registered leech completion listener (no filter, manual check for chat_id={leech_id})")
+                # Also listen for EDITED messages — leech bots edit their status messages
+                userbot.add_handler(
+                    PyrogramEditedMessageHandler(handle_leech_edit),
+                    group=-1
+                )
+                log.info(f"[OK] Registered leech completion listener (NEW + EDITED messages, chat_id={leech_id})")
 
         except Exception as e:
             log.error(f"[Userbot] Failed to start userbot: {e}")
