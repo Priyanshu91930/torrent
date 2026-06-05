@@ -36,9 +36,20 @@ def is_completion_message(text: str) -> bool:
     keywords = [
         "time taken", "download stopped", "stopped!",
         "successfully uploaded", "sent to bot pm", "have been sent",
-        "index link:", "completed successfully",
+        "index link:", "completed successfully", "t.me/c/",
     ]
     return any(kw in t for kw in keywords)
+
+
+def is_progress_update(text: str) -> bool:
+    """Return True if the text looks like an active downloading/uploading progress update."""
+    t = text.lower()
+    if "%" in t and "100%" not in t:
+        return True
+    if "speed:" in t or "eta:" in t or "downloading" in t:
+        if not any(kw in t for kw in ["sent to bot pm", "time taken", "uploaded", "stopped", "t.me/c/"]):
+            return True
+    return False
 
 
 def is_disk_full_message(text: str) -> bool:
@@ -334,6 +345,12 @@ class LeechQueueManager:
         text = (message.text or message.caption or "")
         if not text:
             return
+
+        if not is_progress_update(text):
+            log.info(
+                f"[Queue] Received potential group event (ID={message.id}): {text[:140]!r} "
+                f"(reply_to={getattr(message.reply_to_message, 'id', None) or message.reply_to_message_id})"
+            )
 
         # ── Disk full path ────────────────────────────────────────────────────
         if is_disk_full_message(text):
