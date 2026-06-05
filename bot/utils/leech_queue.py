@@ -303,7 +303,7 @@ class LeechQueueManager:
                     log.info(f"[Queue] [{idx}] Sending to leech group")
                     await self.send_status_log(user_id, f"🚀 Sending task #{idx} to leech group...")
 
-                    cmd = f"/l {refreshed}"
+                    cmd = f"{settings.LEECH_COMMAND} {refreshed}"
                     if refreshed.lower().endswith((".zip", ".rar")):
                         cmd += " -e"
 

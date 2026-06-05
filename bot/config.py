@@ -19,6 +19,7 @@ class Config:
     API_HASH: str = os.getenv("API_HASH", "")
     STRING_SESSION: str = os.getenv("STRING_SESSION", "")
     _leech_raw: str = os.getenv("LEECH_GROUP_ID", "0")
+    LEECH_COMMAND: str = os.getenv("LEECH_COMMAND", "/leech")
     LEECH_GROUP_ID: int | str = int(_leech_raw) if _leech_raw.lstrip("-").isdigit() else _leech_raw
     ADMIN_IDS: List[int] = field(
         default_factory=lambda: [
