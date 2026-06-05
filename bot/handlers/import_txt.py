@@ -86,16 +86,33 @@ async def process_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         # Save the full job to DB (checkpoint)
         await db.save_import_job(user_id, query_key, links)
 
-        await status_msg.edit_text(
-            f"✅ <b>Import Job Loaded</b>\n"
-            f"📋 Total links: <b>{len(links)}</b>\n"
-            f"✔️ Already sent: <b>{already_sent}</b>\n"
-            f"⏳ Queuing now: <b>{pending}</b>\n"
-            f"🔑 Job key: <code>{query_key}</code>",
-            parse_mode="HTML"
-        )
-
-        await _queue_links(user_id, query_key, links)
+        if already_sent > 0:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("▶️ Resume from Left", callback_data=f"import_res:{query_key}"),
+                    InlineKeyboardButton("🔄 Start New", callback_data=f"import_restart:{query_key}")
+                ]
+            ])
+            await status_msg.edit_text(
+                f"⚠️ <b>Existing Progress Found</b>\n"
+                f"📋 Total links: <b>{len(links)}</b>\n"
+                f"✔️ Already sent: <b>{already_sent}</b>\n"
+                f"⏳ Remaining: <b>{pending}</b>\n\n"
+                f"Would you like to resume from where it left off, or start a new job (which clears previous progress)?",
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+        else:
+            await status_msg.edit_text(
+                f"✅ <b>Import Job Loaded</b>\n"
+                f"📋 Total links: <b>{len(links)}</b>\n"
+                f"✔️ Already sent: <b>{already_sent}</b>\n"
+                f"⏳ Queuing now: <b>{pending}</b>\n"
+                f"🔑 Job key: <code>{query_key}</code>",
+                parse_mode="HTML"
+            )
+            await _queue_links(user_id, query_key, links)
 
     except Exception as e:
         log.error(f"[Import] Error processing text file: {e}")

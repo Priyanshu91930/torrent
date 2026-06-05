@@ -262,6 +262,15 @@ class Database:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def get_import_job(self, query_key: str) -> Optional[dict]:
+        """Return a single import job by query_key."""
+        async with self._conn.execute(
+            "SELECT user_id, query_key, links_json, total, completed FROM import_jobs WHERE query_key=?",
+            (query_key,)
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
     async def mark_import_job_complete(self, query_key: str) -> None:
         """Mark an import job as finished."""
         await self._conn.execute(

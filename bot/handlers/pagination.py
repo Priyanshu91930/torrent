@@ -285,6 +285,39 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             show_alert=True
         )
 
+    # ── Import Job Resume / Restart ───────────────────────────────────────────
+    elif data.startswith("import_res:") or data.startswith("import_restart:"):
+        is_restart = data.startswith("import_restart:")
+        query_key = data.split(":", 1)[1]
+
+        job = await db.get_import_job(query_key)
+        if not job:
+            await query.answer("❌ Import job not found in database.", show_alert=True)
+            return
+
+        import json
+        links = json.loads(job["links_json"])
+
+        if is_restart:
+            await db.clear_leech_sent(user_id, query_key)
+            # resets completed status in DB
+            await db.save_import_job(user_id, query_key, links)
+            msg_text = "🔄 Started new import job (cleared previous progress)."
+        else:
+            msg_text = "▶️ Resuming import job from left."
+
+        await query.message.edit_text(
+            f"✅ <b>Import Job Acknowledged</b>\n\n"
+            f"{msg_text}\n"
+            f"📋 Total links: <b>{len(links)}</b>\n"
+            f"⏳ Queuing links now...",
+            parse_mode=ParseMode.HTML
+        )
+
+        from bot.handlers.import_txt import _queue_links
+        await _queue_links(user_id, query_key, links)
+        await query.answer("Job queued!", show_alert=False)
+
     # ── No-op (page counter display) ──────────────────────────────────────────
     elif data == "noop":
         pass
