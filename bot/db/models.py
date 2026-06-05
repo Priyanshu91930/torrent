@@ -74,6 +74,16 @@ class Database:
                 sent_at     INTEGER,
                 UNIQUE(user_id, query_key, link)
             );
+
+            CREATE TABLE IF NOT EXISTS import_jobs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                query_key   TEXT NOT NULL UNIQUE,
+                links_json  TEXT NOT NULL,
+                total       INTEGER,
+                created_at  INTEGER,
+                completed   INTEGER DEFAULT 0
+            );
         """)
         await self._conn.commit()
 
@@ -228,6 +238,41 @@ class Database:
             "DELETE FROM leech_sent WHERE user_id=? AND query_key=?",
             (user_id, query_key)
         )
+        await self._conn.commit()
+
+    # ── Import job checkpointing ───────────────────────────────────────────────
+
+    async def save_import_job(self, user_id: int, query_key: str, links: list) -> None:
+        """Persist an import job so it can be resumed after restart."""
+        import json
+        await self._conn.execute(
+            """
+            INSERT OR REPLACE INTO import_jobs (user_id, query_key, links_json, total, created_at, completed)
+            VALUES (?, ?, ?, ?, ?, 0)
+            """,
+            (user_id, query_key, json.dumps(links), len(links), int(time.time()))
+        )
+        await self._conn.commit()
+
+    async def get_pending_import_jobs(self) -> list:
+        """Return all unfinished import jobs (for resume on restart)."""
+        async with self._conn.execute(
+            "SELECT user_id, query_key, links_json, total FROM import_jobs WHERE completed=0 ORDER BY created_at"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def mark_import_job_complete(self, query_key: str) -> None:
+        """Mark an import job as finished."""
+        await self._conn.execute(
+            "UPDATE import_jobs SET completed=1 WHERE query_key=?",
+            (query_key,)
+        )
+        await self._conn.commit()
+
+    async def delete_import_job(self, query_key: str) -> None:
+        """Delete an import job record entirely."""
+        await self._conn.execute("DELETE FROM import_jobs WHERE query_key=?", (query_key,))
         await self._conn.commit()
 
 

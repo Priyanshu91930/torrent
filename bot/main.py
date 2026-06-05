@@ -36,7 +36,7 @@ from bot.handlers.admin import (
     clear_cache_command,
     list_blacklist_command,
 )
-from bot.handlers.import_txt import import_command, txt_file_message_handler, clear_queue_command
+from bot.handlers.import_txt import import_command, txt_file_message_handler, clear_queue_command, resume_pending_import_jobs
 
 log = setup_logger("torrent_bot", settings.LOG_LEVEL, settings.LOG_FILE)
 
@@ -45,6 +45,9 @@ async def post_init(application: Application) -> None:
     """Run after the application is initialized."""
     await db.connect()
     log.info("[OK] Database connected")
+
+    # Resume any unfinished import jobs from before last restart
+    await resume_pending_import_jobs()
 
     if userbot:
         try:
@@ -174,6 +177,32 @@ def main() -> None:
     app.add_handler(CommandHandler("blist", list_blacklist_command))
     app.add_handler(CommandHandler("clearqueue", clear_queue_command))
     app.add_handler(CommandHandler("cq", clear_queue_command))
+
+    # /skiplink — manually release the oldest stuck active slot
+    from bot.handlers.admin import admin_only as _admin_only
+    from bot.utils.leech_queue import leech_queue as _leech_queue
+
+    @_admin_only
+    async def skiplink_command(update, context):
+        """Manually release the oldest active queue slot (for stuck/corrupt links)."""
+        async with _leech_queue.lock:
+            if not _leech_queue.active:
+                await update.message.reply_text("ℹ️ No active tasks in queue.")
+                return
+            oldest_msg_id = min(_leech_queue.active.keys())
+            magnet, idx, user_id, query_key, session, start_time = _leech_queue.active.pop(oldest_msg_id)
+
+        import asyncio
+        asyncio.create_task(_leech_queue._process_queue())
+        await update.message.reply_text(
+            f"⏭️ Skipped task <b>#{idx}</b> (msg_id={oldest_msg_id}).\n"
+            f"Next link will be sent shortly.",
+            parse_mode="HTML"
+        )
+
+    app.add_handler(CommandHandler("skiplink", skiplink_command))
+    app.add_handler(CommandHandler("sl", skiplink_command))
+
 
     # ── Document / file imports ────────────────────────────────────────────────
     app.add_handler(MessageHandler(filters.Document.ALL, txt_file_message_handler))
