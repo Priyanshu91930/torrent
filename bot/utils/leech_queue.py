@@ -348,7 +348,9 @@ class LeechQueueManager:
                     await self.send_status_log(user_id, f"🚀 Sending task #{idx} to leech group...")
 
                     cmd = f"{settings.LEECH_COMMAND} {refreshed}"
-                    if refreshed.lower().endswith((".zip", ".rar")):
+                    # Strip query parameters (e.g. ?token=abc) before checking file extension
+                    refreshed_path = refreshed.split("?")[0].lower()
+                    if refreshed_path.endswith((".zip", ".rar", ".7z")):
                         cmd += " -e"
 
                     msg = await userbot.send_message(settings.LEECH_GROUP_ID, cmd)
