@@ -514,6 +514,13 @@ class LeechQueueManager:
                 f"✅ Task #{matched_task.idx} completed successfully!"
             )
 
+        # Notify batch search manager
+        try:
+            from bot.utils.batch_search import batch_search_manager
+            await batch_search_manager.on_task_completed(matched_task)
+        except Exception as e:
+            log.error(f"[Queue] Error notifying batch search manager: {e}")
+
         await self._check_job_completion(matched_task.query_key)
 
         # Schedule next task after delay

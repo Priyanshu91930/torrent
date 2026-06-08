@@ -128,75 +128,18 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ── Register user ─────────────────────────────────────────────────────────
     await db.upsert_user(user_id, user.username or "", user.first_name or "")
 
-    # ── Check cache ───────────────────────────────────────────────────────────
-    cached = await torrent_cache.get(query.raw)
-    if cached:
-        log.info(f"[Search] Cache HIT for '{query.raw}' (user {user_id})")
-        results: List[TorrentResult] = cached
-        set_session(user_id, results, query)
-
-        summary = format_search_summary(query, len(results), cached=True)
-        await message.reply_text(summary, parse_mode=ParseMode.HTML)
-
-        if results:
-            await send_page(message, user_id)
-        return
-
     # ── Send initial progress message ─────────────────────────────────────────
     progress_msg = await message.reply_text(
-        format_progress(0, len(scraper_manager._select_scrapers(query)), 0, "Initializing…"),
+        "🔍 <b>Searching torrents...</b>\nInitializing…",
         parse_mode=ParseMode.HTML,
     )
 
-    # ── Cancellation flag ─────────────────────────────────────────────────────
-    _active_searches[user_id] = True
-    updater = ProgressUpdater(progress_msg, update_interval=1.2)
-
-    found_count = 0
-    def progress_cb(done: int, total: int, found: int, stage: str) -> None:
-        nonlocal found_count
-        found_count = found
-        updater.advance(0, found=found, stage=stage)
-        # If user cancelled, we can't stop gather but we flag it
-        if not _active_searches.get(user_id, True):
-            raise asyncio.CancelledError("User cancelled")
-
+    from bot.utils.batch_search import batch_search_manager
     try:
-        await updater.start(total=len(ALL_SCRAPERS_COUNT := scraper_manager._select_scrapers(query)))
-
-        results = await scraper_manager.search(query, progress_callback=progress_cb)
-    except asyncio.CancelledError:
-        await updater.stop()
-        await progress_msg.edit_text("❌ Search cancelled.")
-        return
+        await batch_search_manager.start_job(user_id, query, progress_msg)
     except Exception as e:
-        await updater.stop()
-        log.error(f"[Search] Unexpected error: {e}")
+        log.error(f"[Search] Error in batch search: {e}")
         await progress_msg.edit_text(f"❌ Search failed: {e}")
-        return
-    finally:
-        await updater.stop()
-        _active_searches.pop(user_id, None)
-
-    # ── Cache results ─────────────────────────────────────────────────────────
-    if results:
-        await torrent_cache.set(query.raw, results)
-
-    # ── Log to DB ─────────────────────────────────────────────────────────────
-    await db.log_search(user_id, query.raw, len(results))
-    await db.increment_search_count(user_id)
-
-    # ── Send summary ──────────────────────────────────────────────────────────
-    summary = format_search_summary(query, len(results))
-    await progress_msg.edit_text(summary, parse_mode=ParseMode.HTML)
-
-    if not results:
-        await message.reply_text("😔 No results found. Try a different query.")
-        return
-
-    # ── Store session & send first page ───────────────────────────────────────
-    set_session(user_id, results, query)
-    await send_page(message, user_id)
 
 
 # ── Page sender ───────────────────────────────────────────────────────────────

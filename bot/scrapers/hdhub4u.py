@@ -86,10 +86,8 @@ class HDHub4uScraper(BaseScraper):
             log.error(f"[{self.name}] Fetch error for {url}: {e}")
         return None
 
-    async def search(
-        self, query: SearchQuery, session: aiohttp.ClientSession
-    ) -> List[TorrentResult]:
-        log.info(f"[{self.name}] Searching: {query.query}")
+    async def fast_search_hits(self, query: SearchQuery) -> List[dict]:
+        log.info(f"[{self.name}] Fast searching hits: {query.query}")
         
         # 1. Fetch first page of search results from Typesense
         LIMIT_PER_PAGE = 250
@@ -148,8 +146,9 @@ class HDHub4uScraper(BaseScraper):
                     all_hits.extend(r.get("hits"))
 
         log.info(f"[{self.name}] Found {len(all_hits)} hits from Typesense")
+        return all_hits
 
-        # 2. Concurrently fetch and process movie post pages
+    async def process_hits_batch(self, hits: List[dict]) -> List[TorrentResult]:
         sem = asyncio.Semaphore(10)  # limit concurrency to avoid ban
         
         async def process_hit(hit) -> List[TorrentResult]:
@@ -224,6 +223,7 @@ class HDHub4uScraper(BaseScraper):
                     movie_results.append(TorrentResult(
                         title=res_title,
                         magnet=fsl_link,
+                        torrent_url=post_url,
                         size=size_str,
                         source=self.name,
                         category="movie",
@@ -232,7 +232,7 @@ class HDHub4uScraper(BaseScraper):
 
             return movie_results
 
-        tasks = [process_hit(hit) for hit in all_hits]
+        tasks = [process_hit(hit) for hit in hits]
         movies_list = await asyncio.gather(*tasks, return_exceptions=True)
         
         flat_results: List[TorrentResult] = []
@@ -242,6 +242,14 @@ class HDHub4uScraper(BaseScraper):
                 
         log.info(f"[{self.name}] Scraped {len(flat_results)} direct links matching criteria")
         return flat_results
+
+    async def search(
+        self, query: SearchQuery, session: aiohttp.ClientSession
+    ) -> List[TorrentResult]:
+        hits = await self.fast_search_hits(query)
+        if not hits:
+            return []
+        return await self.process_hits_batch(hits)
 
     async def run_quality_report(self, query: SearchQuery, max_pages_to_check: int = 2) -> dict:
         """
