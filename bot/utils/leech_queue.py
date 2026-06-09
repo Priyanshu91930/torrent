@@ -348,9 +348,32 @@ class LeechQueueManager:
                     await self.send_status_log(user_id, f"🚀 Sending task #{idx} to leech group...")
 
                     cmd = f"{settings.LEECH_COMMAND} {refreshed}"
-                    # Strip query parameters (e.g. ?token=abc) before checking file extension
                     refreshed_path = refreshed.split("?")[0].lower()
-                    if refreshed_path.endswith((".zip", ".rar", ".7z")):
+                    
+                    is_archive = refreshed_path.endswith((".zip", ".rar", ".7z"))
+                    is_series = False
+                    
+                    # Try to find the title for this magnet to check if it's a series
+                    title = None
+                    if session and "results" in session:
+                        for r in session["results"]:
+                            r_magnet = r.get("magnet") if isinstance(r, dict) else getattr(r, "magnet", None)
+                            if r_magnet == magnet:
+                                title = r.get("title") if isinstance(r, dict) else getattr(r, "title", None)
+                                break
+                                
+                    if title:
+                        title_lower = title.lower()
+                        if "season" in title_lower or "complete" in title_lower or "pack" in title_lower or "episodes" in title_lower:
+                            is_series = True
+                        elif re.search(r"\bs\d+", title_lower):
+                            is_series = True
+                        elif re.search(r"ep(?:isodes?|\.)?\s*(\d+)\s*(?:to|-)\s*(\d+)", title_lower):
+                            is_series = True
+                        elif re.search(r"e(\d+)\s*(?:to|-)\s*e?(\d+)", title_lower):
+                            is_series = True
+
+                    if is_archive or is_series:
                         cmd += " -e"
 
                     msg = await userbot.send_message(settings.LEECH_GROUP_ID, cmd)

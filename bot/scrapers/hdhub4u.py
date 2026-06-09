@@ -59,6 +59,17 @@ def get_episode_count(text: str) -> int:
         end = int(m.group(2))
         return max(1, end - start + 1)
         
+    # Pattern 2: e01-e08, e01-08
+    m2 = re.search(r"e(\d+)\s*(?:to|-)\s*e?(\d+)", text_lower)
+    if m2:
+        start = int(m2.group(1))
+        end = int(m2.group(2))
+        return max(1, end - start + 1)
+
+    # Fallback: if it's clearly a series/season pack but we don't know the exact count, default to 8 episodes
+    if "season" in text_lower or "complete" in text_lower or "pack" in text_lower or "episodes" in text_lower or re.search(r"\bs\d+", text_lower):
+        return 8
+
     return 1
 
 class HDHub4uScraper(BaseScraper):
@@ -187,7 +198,7 @@ class HDHub4uScraper(BaseScraper):
             movie_results: List[TorrentResult] = []
 
             # Accepted quality keywords for video files
-            QUALITY_KEYWORDS = ["480p", "720p", "1080p"]
+            QUALITY_KEYWORDS = ["480p", "720p", "1080p", "2160p", "4k"]
             # Archive file extensions
             ARCHIVE_EXTENSIONS = (".zip", ".rar", ".7z")
             # Per-episode size cap for video files (4 GB per episode)
@@ -195,9 +206,13 @@ class HDHub4uScraper(BaseScraper):
             
             # Detect episode count from post title for dynamic size cap
             episode_count = get_episode_count(title)
-            # For archives (packs): cap = 4 GB * episodes; for single movies: 4 GB
-            max_archive_size_gb = VIDEO_SIZE_CAP_GB_PER_EP * max(episode_count, 1)
-            max_video_size_gb = VIDEO_SIZE_CAP_GB_PER_EP  # single episode/movie
+            
+            # Determine size limit for this post/link
+            # If the post has multiple episodes, we use episode_count * 4.0 GB as the limit
+            if episode_count > 1:
+                max_allowed_size_gb = VIDEO_SIZE_CAP_GB_PER_EP * episode_count
+            else:
+                max_allowed_size_gb = VIDEO_SIZE_CAP_GB_PER_EP
 
             # Find all download links
             for a in soup.find_all("a"):
@@ -231,15 +246,9 @@ class HDHub4uScraper(BaseScraper):
                     size_gb = size_val if unit == "gb" else size_val / 1024.0
                     size_str = f"{size_val:.2f} GB" if unit == "gb" else f"{size_val} MB"
 
-                    if is_archive:
-                        # Archive pack: apply dynamic episode-based size cap
-                        if size_gb > max_archive_size_gb:
-                            log.info(f"[HDHub4u] Skipping archive {size_str} > {max_archive_size_gb:.1f}GB cap ({episode_count} eps)")
-                            continue
-                    else:
-                        # Single video file: enforce 4 GB cap
-                        if size_gb >= max_video_size_gb:
-                            continue
+                    if size_gb >= max_allowed_size_gb:
+                        log.info(f"[HDHub4u] Skipping link {text} because size {size_str} >= cap {max_allowed_size_gb:.1f}GB ({episode_count} eps)")
+                        continue
                 elif not is_archive:
                     # If we can't parse size and it's not an archive, skip it
                     continue
@@ -358,7 +367,7 @@ class HDHub4uScraper(BaseScraper):
                 return
 
             soup = BeautifulSoup(html, "lxml")
-            QUALITY_KEYWORDS = ["480p", "720p", "1080p"]
+            QUALITY_KEYWORDS = ["480p", "720p", "1080p", "2160p", "4k"]
             
             has_download_links = False
             has_matching_quality = False
