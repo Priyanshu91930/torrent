@@ -34,6 +34,10 @@ class BatchSearchJob:
         self.fetched_posts: Set[int] = set()
         self.has_triggered_next = False
         self.lock = asyncio.Lock()
+        
+        # Statistics
+        self.qualities_found: Dict[str, int] = {"480p": 0, "720p": 0, "1080p": 0, "4k": 0}
+        self.total_links_found = 0
 
     def get_progress_text(self) -> str:
         done = len(self.completed_posts)
@@ -41,10 +45,19 @@ class BatchSearchJob:
         filled = int(pct / 10)
         bar = "█" * filled + "░" * (10 - filled)
         safe_query = html.escape(self.query.display_query)
+        
+        qual_parts = []
+        for q, count in self.qualities_found.items():
+            if count > 0:
+                qual_parts.append(f"{q.upper()}: <b>{count}</b>")
+        qual_str = ", ".join(qual_parts) if qual_parts else "None yet"
+        
         return (
             f"🔍 <b>Batch Leech:</b> <code>{safe_query}</code>\n"
             f"📊 Total Movies/Posts: <b>{self.total_posts}</b>\n"
             f"✅ Movies Completed: <b>{done} / {self.total_posts}</b>\n"
+            f"🔗 Total Links Found: <b>{self.total_links_found}</b>\n"
+            f"✨ Qualities: {qual_str}\n"
             f"<code>{bar}</code> {pct}%\n"
             f"🌐 Status: <i>Processing batch leech...</i>"
         )
@@ -119,9 +132,24 @@ class BatchSearchManager:
                 if matched_idx != -1:
                     if matched_idx not in job.post_links:
                         job.post_links[matched_idx] = set()
-                    job.post_links[matched_idx].add(res.magnet)
-                    job.link_to_post_idx[res.magnet] = matched_idx
-                    magnets.append(res.magnet)
+                    
+                    if res.magnet not in job.post_links[matched_idx]:
+                        job.post_links[matched_idx].add(res.magnet)
+                        job.link_to_post_idx[res.magnet] = matched_idx
+                        magnets.append(res.magnet)
+                        
+                        # Update statistics
+                        res_title_lower = res.title.lower()
+                        if "480p" in res_title_lower:
+                            job.qualities_found["480p"] += 1
+                        if "720p" in res_title_lower:
+                            job.qualities_found["720p"] += 1
+                        if "1080p" in res_title_lower:
+                            job.qualities_found["1080p"] += 1
+                        if "4k" in res_title_lower or "2160p" in res_title_lower:
+                            job.qualities_found["4k"] += 1
+                        
+                        job.total_links_found += 1
 
             # Record which posts we actually fetched links for
             for idx in range(start_idx, end_idx):
@@ -152,6 +180,10 @@ class BatchSearchManager:
             }
             
             log.info(f"[BatchSearch] Queueing {len(magnets)} links for batch {start_idx}-{end_idx}")
+            try:
+                await job.status_msg.edit_text(job.get_progress_text(), parse_mode=ParseMode.HTML)
+            except Exception as e:
+                log.error(f"[BatchSearch] Error editing status text: {e}")
             await leech_queue.add_to_queue(magnets, job.user_id, job.query_key, session)
 
     async def on_task_completed(self, task) -> None:
