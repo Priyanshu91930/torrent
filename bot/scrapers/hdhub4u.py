@@ -256,6 +256,8 @@ class HDHub4uScraper(BaseScraper):
                 # Resolve active FSL links
                 fsl_link = await self._resolve_fsl_link(href, post_url)
                 if fsl_link:
+                    if is_archive and "#archive" not in fsl_link:
+                        fsl_link += "#archive"
                     res_title = f"{title} - {text}"
                     movie_results.append(TorrentResult(
                         title=res_title,
@@ -497,7 +499,13 @@ class HDHub4uScraper(BaseScraper):
                     log.info(f"[HDHub4u] Found Dynamic FSL link: {fsl_link}")
                     return fsl_link
 
-                # Priority 2: Pixeldrain Link (Stable direct download fallback)
+                # Priority 2: Direct Server link (Hubcloud/Pixel 10Gbps fallback)
+                pixel_anchor = soup.find("a", href=re.compile(r"pixel\.hubcloud\."))
+                if pixel_anchor and pixel_anchor.get("href"):
+                    log.info(f"[HDHub4u] Found 10Gbps Hubcloud link: {pixel_anchor['href']}")
+                    return pixel_anchor["href"]
+
+                # Priority 3: Pixeldrain Link (Stable direct download fallback)
                 pxl_match = re.search(r'var pxl\s*=\s*["\'](https?://[^"\']+)["\']', html)
                 if pxl_match:
                     pxl_url = pxl_match.group(1).replace("pixeldrain.dev", "pixeldrain.com")
@@ -509,12 +517,6 @@ class HDHub4uScraper(BaseScraper):
                     pxl_url = pxl_anchor["href"].replace("pixeldrain.dev", "pixeldrain.com")
                     log.info(f"[HDHub4u] Found Pixeldrain link from anchor: {pxl_url}")
                     return pxl_url
-
-                # Priority 3: Direct Server link (Hubcloud/Pixel 10Gbps fallback)
-                pixel_anchor = soup.find("a", href=re.compile(r"pixel\.hubcloud\."))
-                if pixel_anchor and pixel_anchor.get("href"):
-                    log.info(f"[HDHub4u] Found 10Gbps Hubcloud link: {pixel_anchor['href']}")
-                    return pixel_anchor["href"]
 
         except Exception as e:
             log.error(f"[{self.name}] Error resolving FSL link for {initial_url}: {e}")

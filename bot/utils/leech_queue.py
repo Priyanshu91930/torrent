@@ -20,6 +20,10 @@ def refresh_fsl_link(url: str) -> str:
     """Strip any old dynamic token suffixes and append current minute token."""
     if not url:
         return url
+        
+    has_archive = "#archive" in url
+    url = url.replace("#archive", "")
+    
     if "hub.homelander.buzz" in url or "fsl." in url or "cdn." in url:
         url = re.sub(r'(_1\d+|1\d+)$', '', url)
         minutes = datetime.datetime.now().minute
@@ -28,6 +32,10 @@ def refresh_fsl_link(url: str) -> str:
         else:
             url += f'1{minutes}'
         log.info(f"[Queue] Refreshed token for FSL link (minute={minutes})")
+        
+    if has_archive:
+        url += "#archive"
+        
     return url
 
 
@@ -348,9 +356,17 @@ class LeechQueueManager:
                     await self.send_status_log(user_id, f"🚀 Sending task #{idx} to leech group...")
 
                     cmd = f"{settings.LEECH_COMMAND} {refreshed}"
-                    refreshed_path = refreshed.split("?")[0].lower()
                     
-                    is_archive = refreshed_path.endswith((".zip", ".rar", ".7z"))
+                    is_archive = False
+                    if "#archive" in cmd:
+                        cmd = cmd.replace("#archive", "")
+                        is_archive = True
+
+                    # Strip query parameters (e.g. ?token=abc) before checking file extension
+                    refreshed_path = refreshed.replace("#archive", "").split("?")[0].lower()
+                    if refreshed_path.endswith((".zip", ".rar", ".7z")):
+                        is_archive = True
+                    
                     is_series = False
                     
                     # Try to find the title for this magnet to check if it's a series
@@ -374,7 +390,9 @@ class LeechQueueManager:
                             is_series = True
 
                     if is_archive or is_series:
-                        cmd += " -e"
+                        # Append -e only once
+                        if not cmd.endswith(" -e"):
+                            cmd += " -e"
 
                     msg = await userbot.send_message(settings.LEECH_GROUP_ID, cmd)
 

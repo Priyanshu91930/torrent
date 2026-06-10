@@ -24,11 +24,18 @@ from bot.utils.leech_queue import leech_queue
 
 def _build_leech_cmd(link: str, title: str = None) -> str:
     """Build the leech bot command, appending -e flag for zip/rar archives or series/packs."""
+    is_archive = False
+    
+    if "#archive" in link:
+        link = link.replace("#archive", "")
+        is_archive = True
+        
     cmd = f"/l {link}"
     # Strip query parameters (e.g. ?token=abc) before checking file extension
     link_path = link.split("?")[0].lower()
     
-    is_archive = link_path.endswith((".zip", ".rar", ".7z"))
+    if link_path.endswith((".zip", ".rar", ".7z")):
+        is_archive = True
     is_series = False
     
     if title:
